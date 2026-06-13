@@ -107,6 +107,16 @@ uv run ruff check .
 Tests use PydanticAI's `TestModel`/`FunctionModel` with
 `ALLOW_MODEL_REQUESTS=False`, so the whole loop is testable without a key.
 
+## Known limitations
+
+Simple prismatic parts (plates, brackets, blocks, holes, fillets) converge
+reliably. Parts needing a swept feature *fused* to a body — e.g. a mug handle —
+are at the edge of current model capability: the model often leaves the feature
+as a separate, unfused solid, which the critic correctly rejects via the
+ground-truth `n_solids` check, so the run returns its best effort rather than a
+wrong "accepted". Refining from the best-so-far iteration keeps these hard cases
+from diverging, but does not guarantee they solve within the budget.
+
 ## Future work
 
 Three.js web viewer for runs; pyrender/OSMesa renderer (true hidden-surface

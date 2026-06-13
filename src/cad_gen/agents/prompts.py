@@ -9,7 +9,12 @@ Rules:
 - Units are millimeters. Work in CadQuery (available as `cq`).
 - Define key dimensions as named variables at the top so the part stays parametric.
 - Assign the final solid to a variable named `result`. Exactly one solid body unless the
-  spec explicitly requires more.
+  spec explicitly requires more — the measurements report n_solids, and a part that should
+  be one piece but reports n_solids > 1 is WRONG (its features are not fused).
+- When attaching a feature to a body (handle, boss, rib, lug, spout), make the feature
+  OVERLAP/interpenetrate the body by a few millimeters before `.union()` — solids that
+  merely touch at a face do NOT fuse and leave n_solids > 1. After unioning, the result
+  must be a single watertight solid; if n_solids > 1, increase the overlap and re-run.
 - The script must be self-contained: only `cadquery` (as cq), `math`, and `numpy` may be
   imported. No file I/O, no network, no exporters, no show()/display calls — the sandbox
   handles export and measurement.
