@@ -70,9 +70,11 @@ export function subscribeRun(
   };
 
   source.onerror = (err) => {
-    // EventSource fires onerror when the server closes the stream; only surface
-    // it while the connection is still (re)connecting.
-    if (source.readyState !== EventSource.CLOSED) onError?.(err);
+    // Normal completion closes the stream via close() above and fires no error.
+    // A fatal failure (e.g. 404 for a non-live run, or backend down) leaves the
+    // connection CLOSED — surface that so the caller can fall back to REST.
+    // Transient drops (readyState CONNECTING) auto-reconnect; ignore them.
+    if (source.readyState === EventSource.CLOSED) onError?.(err);
   };
 
   return () => source.close();

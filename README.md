@@ -91,11 +91,40 @@ generated code, and a 4-view render. It returns a structured critique with a
 traceback back to the generator. If the budget runs out, the best-scoring
 iteration is returned and the run exits 1.
 
+## Web view
+
+A Next.js dashboard (in `web/`) drives the loop from the browser: type a spec,
+watch each iteration stream in live over SSE, orbit the real generated geometry
+in 3D, and browse run history. It talks to a thin FastAPI service that wraps
+`generate_cad`.
+
+Run both processes locally (needs `OPENAI_API_KEY` in `.env`):
+
+```bash
+# terminal 1 — backend (FastAPI + SSE), serves on :8000
+uv run uvicorn cad_gen.web.server:app --reload
+
+# terminal 2 — frontend (Next.js), serves on :3000
+cd web && pnpm install && pnpm dev
+```
+
+Open <http://localhost:3000>. Backend env (all optional): `CAD_GEN_WEB_ORIGINS`
+(comma-separated CORS allow-list, default `http://localhost:3000`),
+`CAD_GEN_RUNS_DIR` (artifacts root, default `runs`). Frontend env:
+`NEXT_PUBLIC_API_BASE_URL` (default `http://localhost:8000`; see `web/.env.example`).
+
+**Deploying:** the frontend deploys to Vercel (set root directory to `web/` and
+`NEXT_PUBLIC_API_BASE_URL` to your backend URL). The backend can't run on Vercel
+(native OCCT, subprocess execution, persistent run artifacts) — build the
+included `Dockerfile` and host it on Fly.io / Render / a VM, setting
+`OPENAI_API_KEY` and `CAD_GEN_WEB_ORIGINS` (your Vercel domain).
+
 ## Security note
 
 The subprocess sandbox provides **crash/timeout/state isolation, not a
-security boundary** — generated code runs with your user's privileges. This is
-a local development tool; run it in a container if you need real isolation.
+security boundary** — generated code runs with your user's privileges. The web
+backend makes this reachable over HTTP, so bind it to localhost in development
+and **never expose it publicly without container isolation and auth**.
 
 ## Development
 
@@ -119,6 +148,6 @@ from diverging, but does not guarantee they solve within the budget.
 
 ## Future work
 
-Three.js web viewer for runs; pyrender/OSMesa renderer (true hidden-surface
-removal); multi-part assemblies; dimension-assertion validator parsed from the
-spec.
+pyrender/OSMesa renderer (true hidden-surface removal); multi-part assemblies;
+dimension-assertion validator parsed from the spec; auth + persistent run store
+for a hosted web deployment.
