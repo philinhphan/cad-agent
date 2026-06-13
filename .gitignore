@@ -1,0 +1,20 @@
+# Secrets — never commit
+.env
+
+# Generated run artifacts
+runs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
