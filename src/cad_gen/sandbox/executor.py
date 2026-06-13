@@ -18,7 +18,9 @@ _TRACEBACK_TAIL_CHARS = 3000
 
 def run_cad_code(code: str, out_dir: Path, timeout_s: float = 60) -> ExecutionResult:
     """Execute `code` via the harness subprocess; artifacts land in `out_dir`."""
-    out_dir = Path(out_dir)
+    # Resolve before anything else: the subprocess runs with cwd=out_dir, so
+    # relative paths in its argv would resolve against the wrong base.
+    out_dir = Path(out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     code_file = out_dir / "model.py"
     code_file.write_text(code)

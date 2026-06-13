@@ -4,6 +4,8 @@ These spawn real subprocesses running real CadQuery — slow-ish (~3s each,
 OCCT import) but they are the contract the whole agent loop stands on.
 """
 
+from pathlib import Path
+
 import pytest
 
 from cad_gen.sandbox.executor import run_cad_code
@@ -101,6 +103,17 @@ def test_user_stdout_captured(tmp_path):
 
     assert r.success, r.error
     assert "building the part now" in r.stdout
+
+
+def test_relative_out_dir_supported(tmp_path, monkeypatch):
+    """Live CLI runs use a relative out_dir (runs/...); the subprocess must
+    still find the code file even though its cwd is changed to out_dir."""
+    monkeypatch.chdir(tmp_path)
+
+    r = run_cad_code(GOOD_BOX, Path("runs/iter_01/attempt_01"))
+
+    assert r.success, r.error
+    assert r.stl_path.exists()
 
 
 def test_infinite_loop_times_out(tmp_path):
