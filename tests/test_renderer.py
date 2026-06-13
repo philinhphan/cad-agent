@@ -1,9 +1,10 @@
+import numpy as np
 import pytest
 import trimesh
 from PIL import Image
 
 from cad_gen.models import GeometryMetrics
-from cad_gen.rendering.renderer import render_views
+from cad_gen.rendering.renderer import _rasterize_view, render_views
 
 
 @pytest.fixture
@@ -12,6 +13,47 @@ def box_stl(tmp_path):
     path = tmp_path / "box.stl"
     mesh.export(path)
     return path
+
+
+def test_rasterizer_resolves_hidden_surfaces():
+    """Z-buffer correctness: the near face must win every overlapped pixel.
+
+    (The previous painter's-algorithm renderer drew phantom rims/recesses
+    that misled the vision critic.)
+    """
+    mesh = trimesh.creation.box(extents=(10.0, 10.0, 10.0))
+
+    rgb, depth, extent = _rasterize_view(
+        mesh, elev=0, azim=-90, center=np.zeros(3), half=8.0, res=200
+    )
+
+    # camera sits on -Y; the near face is y=-5, i.e. view-axis depth +5
+    assert depth[100, 100] == pytest.approx(5.0, abs=1e-6)
+
+
+def test_rasterizer_renders_flat_faces_uniformly():
+    """Top view of a plain plate shows exactly one color inside the outline —
+    any tonal band would read as a phantom rim/recess to the critic."""
+    mesh = trimesh.creation.box(extents=(60.0, 40.0, 8.0))
+
+    rgb, depth, extent = _rasterize_view(
+        mesh, elev=90, azim=-90, center=np.zeros(3), half=40.0, res=400
+    )
+
+    hit = depth > -np.inf
+    assert hit.sum() > 1000, "part must actually be rendered"
+    colors = rgb[hit]
+    assert (colors == colors[0]).all(), "flat top face must be perfectly uniform"
+
+
+def test_rasterizer_view_extent_in_world_mm():
+    mesh = trimesh.creation.box(extents=(10.0, 10.0, 10.0))
+
+    rgb, depth, extent = _rasterize_view(
+        mesh, elev=90, azim=-90, center=np.zeros(3), half=8.0, res=100
+    )
+
+    assert extent == pytest.approx((-8.0, 8.0, -8.0, 8.0))
 
 
 def test_renders_composite_png_with_metrics_banner(box_stl, tmp_path):
