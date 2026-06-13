@@ -8,8 +8,11 @@ export type RunStatus = "connecting" | "running" | "done" | "error";
 
 export interface RunStreamState {
   status: RunStatus;
+  runId: string | null;
   spec: string | null;
   config: RunConfig | null;
+  drawings: string[];
+  interpretation: string | null;
   iterations: IterationPayload[];
   accepted: boolean | null;
   bestIndex: number | null;
@@ -18,8 +21,11 @@ export interface RunStreamState {
 
 const INITIAL: RunStreamState = {
   status: "connecting",
+  runId: null,
   spec: null,
   config: null,
+  drawings: [],
+  interpretation: null,
   iterations: [],
   accepted: null,
   bestIndex: null,
@@ -29,7 +35,15 @@ const INITIAL: RunStreamState = {
 function reduce(state: RunStreamState, event: RunEvent): RunStreamState {
   switch (event.type) {
     case "started":
-      return { ...state, status: "running", spec: event.spec, config: event.config };
+      return {
+        ...state,
+        status: "running",
+        runId: event.run_id,
+        spec: event.spec,
+        config: event.config,
+        drawings: event.drawings ?? [],
+        interpretation: event.interpretation ?? null,
+      };
     case "iteration":
       return {
         ...state,
@@ -43,6 +57,8 @@ function reduce(state: RunStreamState, event: RunEvent): RunStreamState {
         accepted: event.result.accepted,
         bestIndex: event.result.best.index,
         spec: state.spec ?? event.result.spec,
+        drawings: state.drawings.length ? state.drawings : event.result.drawings ?? [],
+        interpretation: state.interpretation ?? event.result.interpretation ?? null,
       };
     case "error":
       return { ...state, status: "error", error: event.message };
@@ -79,11 +95,17 @@ export function staticRunState(
   accepted: boolean,
   bestIndex: number,
   spec: string,
+  runId: string,
+  drawings: string[] = [],
+  interpretation: string | null = null,
 ): RunStreamState {
   return {
     status: "done",
+    runId,
     spec,
     config: null,
+    drawings,
+    interpretation,
     iterations,
     accepted,
     bestIndex,

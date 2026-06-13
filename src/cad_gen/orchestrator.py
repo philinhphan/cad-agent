@@ -5,15 +5,18 @@ from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
+from pydantic_ai import BinaryContent
 from pydantic_ai.models import Model
 
 from cad_gen.agents.critic import build_critic_agent, run_critique
+from cad_gen.agents.drawing_parser import build_drawing_parser_agent, interpret_drawing
 from cad_gen.agents.generator import (
     ExecutorFn,
     IterationWorkspace,
     build_generator_agent,
 )
-from cad_gen.models import IterationRecord, RunConfig, RunResult
+from cad_gen.imaging import drawing_filename
+from cad_gen.models import DrawingAttachment, IterationRecord, RunConfig, RunResult
 from cad_gen.rendering.renderer import render_views
 from cad_gen.sandbox.executor import run_cad_code
 
@@ -25,17 +28,34 @@ async def generate_cad(
     spec: str,
     config: RunConfig | None = None,
     *,
+    drawings: list[DrawingAttachment] | None = None,
+    interpretation: str | None = None,
     generator_model: str | Model | None = None,
     critic_model: str | Model | None = None,
+    interpreter_model: str | Model | None = None,
     executor: ExecutorFn = run_cad_code,
     renderer: RendererFn = render_views,
     on_iteration: IterationCallback | None = None,
 ) -> RunResult:
-    """Run the full self-refine loop for `spec`; artifacts land under config.out_dir."""
+    """Run the full self-refine loop for `spec`; artifacts land under config.out_dir.
+
+    `drawings` are input engineering-drawing images; when present they are persisted,
+    threaded to the generator (every iteration) and critic as authoritative ground truth,
+    and `interpretation` (an extracted-dimensions digest) is auto-generated if not supplied
+    by the caller (e.g. a human-reviewed/edited digest from the CLI or web gate).
+    """
     config = config or RunConfig()
+    drawings = drawings or []
     run_dir = _new_run_dir(Path(config.out_dir))
     (run_dir / "spec.txt").write_text(spec)
     (run_dir / "config.json").write_text(config.model_dump_json(indent=2))
+
+    drawing_names = _persist_drawings(run_dir, drawings)
+    if drawings and interpretation is None:
+        interpreter = build_drawing_parser_agent(interpreter_model or config.model)
+        interpretation = await interpret_drawing(interpreter, spec=spec, drawings=drawings)
+    if interpretation is not None:
+        (run_dir / "drawing_interpretation.md").write_text(interpretation)
 
     generator = build_generator_agent(generator_model or config.model)
     critic = build_critic_agent(critic_model or config.critic_model)
@@ -53,7 +73,7 @@ async def generate_cad(
             executor=executor,
         )
 
-        prompt = spec if feedback is None else f"{spec}\n\n{feedback}"
+        prompt = _build_prompt(spec, feedback, interpretation, drawings)
         gen_result = await generator.run(prompt, deps=workspace)
 
         execution = workspace.last_success or (
@@ -68,7 +88,11 @@ async def generate_cad(
                 execution.stl_path, iter_dir / "views.png", execution.metrics
             )
             record.critique = await run_critique(
-                critic, spec=spec, execution=execution, render_path=record.render_path
+                critic,
+                spec=spec,
+                execution=execution,
+                render_path=record.render_path,
+                drawings=drawings,
             )
 
         (iter_dir / "iteration.json").write_text(record.model_dump_json(indent=2))
@@ -85,6 +109,8 @@ async def generate_cad(
     result = RunResult(
         accepted=best.effective_score >= config.score_threshold,
         spec=spec,
+        drawings=drawing_names,
+        interpretation=interpretation,
         best=best,
         iterations=iterations,
         run_dir=run_dir,
@@ -105,6 +131,49 @@ def _new_run_dir(out_dir: Path) -> Path:
         run_dir = out_dir / f"{base}_{suffix}"
     run_dir.mkdir()
     return run_dir
+
+
+def _persist_drawings(run_dir: Path, drawings: list[DrawingAttachment]) -> list[str]:
+    """Save input drawings under run_dir/input/ with sanitized names; return the names.
+
+    The client-supplied filename is never used on disk — we name by index + a suffix
+    derived from the media type, so the path can be served safely as an artifact.
+    """
+    if not drawings:
+        return []
+    input_dir = run_dir / "input"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    names: list[str] = []
+    for i, d in enumerate(drawings, start=1):
+        name = drawing_filename(i, d.media_type)
+        (input_dir / name).write_bytes(d.data)
+        names.append(name)
+    return names
+
+
+def _build_prompt(
+    spec: str,
+    feedback: str | None,
+    interpretation: str | None,
+    drawings: list[DrawingAttachment],
+) -> str | list:
+    """Generator prompt. Plain str for text-only runs (byte-identical to before);
+    a [text, *images] list when drawings are present so the model re-reads the
+    authoritative drawing on every iteration."""
+    text = spec if feedback is None else f"{spec}\n\n{feedback}"
+    if interpretation:
+        text += (
+            "\n\n## Extracted dimensions from the attached drawing (REFERENCE ONLY — "
+            "the drawing image is authoritative; if anything here conflicts with the "
+            f"image, trust the image):\n{interpretation}"
+        )
+    if not drawings:
+        return text
+    content: list = [text]
+    content.extend(
+        BinaryContent(data=d.data, media_type=d.media_type) for d in drawings
+    )
+    return content
 
 
 def _build_feedback(champion: IterationRecord, latest: IterationRecord) -> str:
@@ -173,8 +242,17 @@ def _write_report(result: RunResult, config: RunConfig) -> None:
     lines = [
         "# cad-gen report",
         "",
-        f"**Spec:** {result.spec}",
+        f"**Spec:** {result.spec or '(from drawing)'}",
         "",
+    ]
+    if result.drawings:
+        lines += [
+            f"**Input drawings:** {', '.join(result.drawings)}",
+            "",
+            *[f"![input drawing](input/{name})" for name in result.drawings],
+            "",
+        ]
+    lines += [
         f"**Verdict:** {verdict} — best score {result.best.effective_score}/10 "
         f"(threshold {config.score_threshold}, iteration {result.best.index} of "
         f"{len(result.iterations)} run)",

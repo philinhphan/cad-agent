@@ -3,11 +3,19 @@
 import json
 from pathlib import Path
 
+from pydantic_ai import BinaryContent
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from cad_gen.models import ExecutionResult, GeometryMetrics, RunConfig
+from cad_gen.models import (
+    DrawingAttachment,
+    ExecutionResult,
+    GeometryMetrics,
+    RunConfig,
+)
 from cad_gen.orchestrator import generate_cad
+
+PNG = b"\x89PNG\r\n\x1a\nfakepng"
 
 GOOD_V1 = "import cadquery as cq\nresult = cq.Workplane().box(10, 10, 10)  # v1"
 GOOD_V2 = "import cadquery as cq\nresult = cq.Workplane().box(10, 10, 10).faces('>Z').hole(4)  # v2"
@@ -62,6 +70,35 @@ def scripted_generator(script: list, prompts_seen: list[str]) -> FunctionModel:
         if kind == "tool":
             return ModelResponse(parts=[ToolCallPart("execute_cad_code", {"code": payload})])
         return ModelResponse(parts=[TextPart(payload)])
+
+    return FunctionModel(fn)
+
+
+def capturing_generator(
+    script: list, first_contents: list, images: list
+) -> FunctionModel:
+    """Like scripted_generator but records the first user-prompt content object and any
+    images the generator was sent, so tests can assert how the prompt was built."""
+    state = {"i": 0}
+
+    def fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if len(messages) == 1:
+            content = messages[0].parts[0].content
+            first_contents.append(content)
+            if isinstance(content, list):
+                images.extend(c for c in content if isinstance(c, BinaryContent))
+        kind, payload = script[state["i"]]
+        state["i"] += 1
+        if kind == "tool":
+            return ModelResponse(parts=[ToolCallPart("execute_cad_code", {"code": payload})])
+        return ModelResponse(parts=[TextPart(payload)])
+
+    return FunctionModel(fn)
+
+
+def scripted_text_model(text: str) -> FunctionModel:
+    def fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        return ModelResponse(parts=[TextPart(text)])
 
     return FunctionModel(fn)
 
@@ -280,3 +317,86 @@ async def test_run_result_json_persisted(tmp_path):
     payload = json.loads((result.run_dir / "run_result.json").read_text())
     assert payload["accepted"] is True
     assert payload["best"]["critique"]["score"] == 10
+
+
+async def test_drawings_persisted_and_threaded_with_auto_interpretation(tmp_path):
+    first_contents: list = []
+    images: list = []
+    generator = capturing_generator([("tool", GOOD_V1), ("text", "built")], first_contents, images)
+    critic = scripted_critic([critique_args(9, [])], [])
+    drawings = [DrawingAttachment(filename="orig.png", media_type="image/png", data=PNG)]
+    config = RunConfig(max_iterations=2, score_threshold=8, out_dir=tmp_path / "runs")
+
+    result = await generate_cad(
+        "",
+        config,
+        drawings=drawings,
+        interpreter_model=scripted_text_model("ENVELOPE 85x135x25, Ø15 THRU"),
+        generator_model=generator,
+        critic_model=critic,
+        executor=stub_executor,
+        renderer=stub_renderer,
+    )
+
+    # input drawing persisted under run_dir/input/ with a sanitized name
+    assert (result.run_dir / "input" / "drawing_01.png").read_bytes() == PNG
+    assert result.drawings == ["drawing_01.png"]
+    # auto interpretation produced, persisted, and recorded
+    assert (result.run_dir / "drawing_interpretation.md").read_text() == "ENVELOPE 85x135x25, Ø15 THRU"
+    assert result.interpretation == "ENVELOPE 85x135x25, Ø15 THRU"
+    # generator iter-1 prompt carried both the image and the interpretation text
+    assert len(images) == 1 and images[0].media_type == "image/png"
+    text_part = next(c for c in first_contents[0] if isinstance(c, str))
+    assert "Ø15 THRU" in text_part
+
+
+async def test_provided_interpretation_skips_interpreter(tmp_path):
+    def boom(messages, info):  # interpreter must NOT be invoked
+        raise AssertionError("interpreter should not run when interpretation is provided")
+
+    generator = scripted_generator([("tool", GOOD_V1), ("text", "built")], [])
+    critic = scripted_critic([critique_args(9, [])], [])
+    drawings = [DrawingAttachment(filename="x.jpg", media_type="image/jpeg", data=PNG)]
+    config = RunConfig(max_iterations=1, score_threshold=8, out_dir=tmp_path / "runs")
+
+    result = await generate_cad(
+        "",
+        config,
+        drawings=drawings,
+        interpretation="USER-EDITED DIMS",
+        interpreter_model=FunctionModel(boom),
+        generator_model=generator,
+        critic_model=critic,
+        executor=stub_executor,
+        renderer=stub_renderer,
+    )
+
+    assert result.interpretation == "USER-EDITED DIMS"
+    assert (result.run_dir / "drawing_interpretation.md").read_text() == "USER-EDITED DIMS"
+    assert (result.run_dir / "input" / "drawing_01.jpg").read_bytes() == PNG
+
+
+async def test_text_only_prompt_stays_plain_string(tmp_path):
+    first_contents: list = []
+    images: list = []
+    generator = capturing_generator([("tool", GOOD_V1), ("text", "built")], first_contents, images)
+    critic = scripted_critic([critique_args(9, [])], [])
+    config = RunConfig(max_iterations=1, score_threshold=8, out_dir=tmp_path / "runs")
+
+    result = await generate_cad(
+        "a plain cube",
+        config,
+        generator_model=generator,
+        critic_model=critic,
+        executor=stub_executor,
+        renderer=stub_renderer,
+    )
+
+    # text-only path is byte-identical to before: plain str, no images, no input dir
+    assert isinstance(first_contents[0], str)
+    assert first_contents[0] == "a plain cube"
+    assert images == []
+    assert result.drawings == []
+    assert result.interpretation is None
+    assert not (result.run_dir / "input").exists()
+    assert not (result.run_dir / "drawing_interpretation.md").exists()

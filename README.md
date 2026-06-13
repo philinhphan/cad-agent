@@ -98,15 +98,23 @@ watch each iteration stream in live over SSE, orbit the real generated geometry
 in 3D, and browse run history. It talks to a thin FastAPI service that wraps
 `generate_cad`.
 
-Run both processes locally (needs `OPENAI_API_KEY` in `.env`):
+Run both processes locally (needs `OPENAI_API_KEY` in `.env`). The backend deps
+live in the optional `web` extra, so pass `--extra web` (plain `uv run uvicorn …`
+falls back to a global uvicorn that can't import the app):
 
 ```bash
+# one-time: install the web extra (FastAPI, uvicorn, SSE, multipart)
+uv sync --extra web
+
 # terminal 1 — backend (FastAPI + SSE), serves on :8000
-uv run uvicorn cad_gen.web.server:app --reload
+uv run --extra web uvicorn cad_gen.web.server:app --reload
 
 # terminal 2 — frontend (Next.js), serves on :3000
 cd web && pnpm install && pnpm dev
 ```
+
+The web view also accepts a **technical drawing** (JPEG/PNG): drop it on the form,
+review/edit the auto-extracted dimensions, then generate. Drawing + text both work.
 
 Open <http://localhost:3000>. Backend env (all optional): `CAD_GEN_WEB_ORIGINS`
 (comma-separated CORS allow-list, default `http://localhost:3000`),

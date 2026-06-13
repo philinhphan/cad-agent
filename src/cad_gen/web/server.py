@@ -13,15 +13,43 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from sse_starlette.sse import EventSourceResponse
 
+from cad_gen.agents.drawing_parser import build_drawing_parser_agent, interpret_drawing
+from cad_gen.imaging import ALLOWED_MEDIA_TYPES, MAX_DRAWING_BYTES, MAX_DRAWINGS, media_type_for
+from cad_gen.models import DrawingAttachment, RunConfig
 from cad_gen.web import runs as runs_mod
-from cad_gen.web.schemas import StartRunRequest, StartRunResponse
+from cad_gen.web.schemas import StartRunResponse
 
 DEFAULT_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
+
+
+async def _to_attachments(files: list[UploadFile]) -> list[DrawingAttachment]:
+    """Validate uploaded drawing files (type + size + count) into attachments."""
+    if len(files) > MAX_DRAWINGS:
+        raise HTTPException(
+            status_code=422, detail=f"at most {MAX_DRAWINGS} drawings per run"
+        )
+    attachments: list[DrawingAttachment] = []
+    for f in files:
+        data = await f.read()
+        if len(data) > MAX_DRAWING_BYTES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{f.filename or 'drawing'} exceeds {MAX_DRAWING_BYTES} bytes",
+            )
+        media = media_type_for(f.filename, data)
+        if media not in ALLOWED_MEDIA_TYPES:
+            raise HTTPException(
+                status_code=422, detail="drawings must be PNG or JPEG images"
+            )
+        attachments.append(
+            DrawingAttachment(filename=f.filename or "drawing", media_type=media, data=data)
+        )
+    return attachments
 
 
 def _resolve_origins(origins: list[str] | None) -> list[str]:
@@ -59,9 +87,41 @@ def create_app(
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    @app.post("/api/drawings/interpret")
+    async def interpret(
+        spec: str = Form(""),
+        config: str = Form("{}"),
+        drawings: list[UploadFile] = File(default=[]),
+    ) -> dict:
+        """Extract a dimensions digest from drawing(s) for the user to review/edit."""
+        atts = await _to_attachments(drawings)
+        if not atts:
+            raise HTTPException(status_code=422, detail="no drawings to interpret")
+        cfg = RunConfig.model_validate_json(config)
+        agent = build_drawing_parser_agent(cfg.model)
+        text = await interpret_drawing(agent, spec=spec, drawings=atts)
+        return {"interpretation": text}
+
     @app.post("/api/runs", response_model=StartRunResponse)
-    def start_run(req: StartRunRequest) -> StartRunResponse:
-        handle = runs_mod.start_run(req.spec, req.config, app.state.runs_dir)
+    async def start_run(
+        spec: str = Form(""),
+        config: str = Form("{}"),
+        interpretation: str | None = Form(None),
+        drawings: list[UploadFile] = File(default=[]),
+    ) -> StartRunResponse:
+        atts = await _to_attachments(drawings)
+        if not spec.strip() and not atts:
+            raise HTTPException(
+                status_code=422, detail="provide a spec, a drawing, or both"
+            )
+        cfg = RunConfig.model_validate_json(config)
+        handle = runs_mod.start_run(
+            spec,
+            cfg,
+            app.state.runs_dir,
+            drawings=atts,
+            interpretation=interpretation,
+        )
         return StartRunResponse(run_id=handle.run_id)
 
     @app.get("/api/runs")
@@ -85,6 +145,10 @@ def create_app(
             run_id, index, name, app.state.runs_dir
         )
         return FileResponse(path)
+
+    @app.get("/api/runs/{run_id}/input/{name}")
+    def input_artifact(run_id: str, name: str):
+        return runs_mod.input_artifact(run_id, name, app.state.runs_dir)
 
     return app
 

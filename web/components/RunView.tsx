@@ -13,9 +13,10 @@ export function RunView({
   state: RunStreamState;
   threshold: number;
 }) {
-  const { iterations, status, accepted, bestIndex } = state;
+  const { iterations, status, accepted, bestIndex, runId, drawings, interpretation } = state;
   const best = iterations.find((it) => it.record.index === bestIndex);
   const bestScore = best?.record.critique?.score ?? null;
+  const inputUrl = (name: string) => apiUrl(`/api/runs/${runId}/input/${name}`);
 
   return (
     <div className="mx-auto max-w-[1100px] px-5 py-8">
@@ -25,11 +26,36 @@ export function RunView({
           <div className="min-w-0">
             <div className="tech-label mb-1.5">specification</div>
             <p className="text-[1.05rem] leading-snug text-ink">
-              {state.spec ?? "—"}
+              {state.spec?.trim() ? state.spec : "from drawing"}
             </p>
           </div>
           <RunStatusBadge status={status} accepted={accepted} />
         </div>
+
+        {runId && drawings.length > 0 && (
+          <div className="mt-4 border-t border-line pt-4">
+            <div className="tech-label mb-2">input drawing{drawings.length > 1 ? "s" : ""}</div>
+            <div className="flex flex-wrap gap-2.5">
+              {drawings.map((name) => (
+                <a
+                  key={name}
+                  href={inputUrl(name)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="block overflow-hidden rounded-[var(--radius-tech)] border border-line transition-colors hover:border-accent/60"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={inputUrl(name)}
+                    alt={name}
+                    className="h-28 w-auto bg-[#0c1016] object-contain"
+                  />
+                </a>
+              ))}
+            </div>
+            {interpretation && <Interpretation text={interpretation} />}
+          </div>
+        )}
 
         {status === "done" && (
           <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-3 border-t border-line pt-4">
@@ -73,6 +99,19 @@ export function RunView({
         )}
       </div>
     </div>
+  );
+}
+
+function Interpretation({ text }: { text: string }) {
+  return (
+    <details className="mt-3 rounded-[var(--radius-tech)] border border-line bg-[#0c1016]">
+      <summary className="cursor-pointer px-3 py-2 tech-label transition-colors hover:text-ink">
+        extracted dimensions
+      </summary>
+      <pre className="max-h-72 overflow-auto whitespace-pre-wrap border-t border-line px-3 py-2.5 text-[0.8rem] leading-relaxed text-ink-dim">
+        {text}
+      </pre>
+    </details>
   );
 }
 

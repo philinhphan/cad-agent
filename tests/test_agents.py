@@ -1,12 +1,27 @@
 from pathlib import Path
 
+from pydantic_ai import BinaryContent
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 
 from cad_gen.agents.critic import build_critic_agent, run_critique
+from cad_gen.agents.drawing_parser import build_drawing_parser_agent, interpret_drawing
 from cad_gen.agents.generator import IterationWorkspace, build_generator_agent
-from cad_gen.models import ExecutionResult, GeometryMetrics
+from cad_gen.models import DrawingAttachment, ExecutionResult, GeometryMetrics
+
+PNG = b"\x89PNG\r\n\x1a\nfakepngdata"
+
+
+def _images_in(messages: list[ModelMessage]) -> list[BinaryContent]:
+    """Collect every BinaryContent the model was sent (across all message parts)."""
+    found: list[BinaryContent] = []
+    for m in messages:
+        for part in getattr(m, "parts", []):
+            content = getattr(part, "content", None)
+            if isinstance(content, list):
+                found.extend(c for c in content if isinstance(c, BinaryContent))
+    return found
 
 BAD_CODE = "result = cq.Workplane().box(undefined, 1, 1)"
 GOOD_CODE = "import cadquery as cq\nresult = cq.Workplane().box(10, 10, 10)"
@@ -144,3 +159,59 @@ async def test_critic_returns_structured_critique(tmp_path):
     assert critique.score == 4
     assert critique.matches_spec is False
     assert "hole" in critique.issues[0]
+
+
+async def test_drawing_parser_returns_text_and_receives_image():
+    captured: list[ModelMessage] = []
+
+    def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        captured.extend(messages)
+        return ModelResponse(parts=[TextPart("85 x 135 x 25 plate, R20 corners, Ø15 THRU")])
+
+    agent = build_drawing_parser_agent(FunctionModel(model_fn))
+    drawings = [DrawingAttachment(filename="d.png", media_type="image/png", data=PNG)]
+
+    out = await interpret_drawing(agent, spec="a bracket", drawings=drawings)
+
+    assert "Ø15" in out
+    images = _images_in(captured)
+    assert len(images) == 1
+    assert images[0].media_type == "image/png"
+
+
+async def test_critic_receives_render_then_input_drawings(tmp_path):
+    render = tmp_path / "views.png"
+    render.write_bytes(b"\x89PNG\r\n\x1a\nfakerender")
+    execution = fake_executor_factory([])(GOOD_CODE, tmp_path)
+    captured: list[ModelMessage] = []
+
+    def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        captured.extend(messages)
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    info.output_tools[0].name,
+                    {
+                        "matches_spec": True,
+                        "score": 9,
+                        "issues": [],
+                        "suggestions": [],
+                        "summary": "matches the drawing",
+                    },
+                )
+            ]
+        )
+
+    agent = build_critic_agent(FunctionModel(model_fn))
+    drawings = [DrawingAttachment(filename="d.jpg", media_type="image/jpeg", data=PNG)]
+
+    critique = await run_critique(
+        agent, spec="", execution=execution, render_path=render, drawings=drawings
+    )
+
+    assert critique.score == 9
+    images = _images_in(captured)
+    # first image is the render, then each input drawing
+    assert len(images) == 2
+    assert images[0].media_type == "image/png"  # the rendered views
+    assert images[1].media_type == "image/jpeg"  # the input drawing

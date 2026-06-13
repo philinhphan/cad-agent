@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion } from "motion/react";
-import { startRun } from "@/lib/api";
+import { interpretDrawing, startRun } from "@/lib/api";
 import type { RunConfigInput } from "@/lib/types";
 
 const EXAMPLES = [
@@ -20,6 +20,9 @@ const DEFAULTS = {
   exec_timeout_s: 60,
 };
 
+const MAX_FILES = 5;
+const ACCEPT = ["image/png", "image/jpeg"];
+
 export function SpecForm() {
   const router = useRouter();
   const [spec, setSpec] = useState("");
@@ -28,26 +31,88 @@ export function SpecForm() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function submit() {
-    if (!spec.trim() || submitting) return;
-    setSubmitting(true);
-    setError(null);
-    const config: RunConfigInput = {
+  const [files, setFiles] = useState<File[]>([]);
+  const [dragging, setDragging] = useState(false);
+  const [phase, setPhase] = useState<"compose" | "review">("compose");
+  const [interpretation, setInterpretation] = useState("");
+  const [interpreting, setInterpreting] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  function buildConfig(): RunConfigInput {
+    return {
       model: cfg.model,
       critic_model: cfg.critic_model.trim() || null,
       max_iterations: cfg.max_iterations,
       score_threshold: cfg.score_threshold,
       exec_timeout_s: cfg.exec_timeout_s,
     };
+  }
+
+  function addFiles(incoming: FileList | File[]) {
+    const accepted = Array.from(incoming).filter((f) => ACCEPT.includes(f.type));
+    if (accepted.length === 0) return;
+    setFiles((prev) => [...prev, ...accepted].slice(0, MAX_FILES));
+  }
+
+  function reportError(e: unknown) {
+    setError(
+      `${e instanceof Error ? e.message : "request failed"} — is the backend running on ${process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"}?`,
+    );
+  }
+
+  async function readDrawing() {
+    if (files.length === 0 || interpreting) return;
+    setInterpreting(true);
+    setError(null);
     try {
-      const { run_id } = await startRun(spec.trim(), config);
+      const { interpretation } = await interpretDrawing(spec.trim(), buildConfig(), files);
+      setInterpretation(interpretation);
+      setPhase("review");
+    } catch (e) {
+      reportError(e);
+    } finally {
+      setInterpreting(false);
+    }
+  }
+
+  async function generate(withInterpretation: boolean) {
+    if ((!spec.trim() && files.length === 0) || submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const { run_id } = await startRun(
+        spec.trim(),
+        buildConfig(),
+        files,
+        withInterpretation ? interpretation : undefined,
+      );
       router.push(`/runs/${run_id}`);
     } catch (e) {
-      setError(
-        `${e instanceof Error ? e.message : "request failed"} — is the backend running on ${process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"}?`,
-      );
+      reportError(e);
       setSubmitting(false);
     }
+  }
+
+  // Primary action: drawings go through the review gate; text-only generates directly.
+  function primaryAction() {
+    if (files.length > 0) return readDrawing();
+    return generate(false);
+  }
+
+  const canStart = (spec.trim().length > 0 || files.length > 0) && !submitting && !interpreting;
+
+  if (phase === "review") {
+    return (
+      <ReviewPanel
+        files={files}
+        interpretation={interpretation}
+        onChange={setInterpretation}
+        onBack={() => setPhase("compose")}
+        onGenerate={() => generate(true)}
+        submitting={submitting}
+        error={error}
+      />
+    );
   }
 
   return (
@@ -57,10 +122,10 @@ export function SpecForm() {
         value={spec}
         onChange={(e) => setSpec(e.target.value)}
         onKeyDown={(e) => {
-          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") submit();
+          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") primaryAction();
         }}
         rows={4}
-        placeholder="describe the part in plain language — dimensions in mm, features, holes, fillets…"
+        placeholder="describe the part in plain language — or drop an engineering drawing below"
         className="mt-2 w-full resize-y rounded-[var(--radius-tech)] border border-line bg-[#0c1016] p-3.5 text-[0.95rem] leading-relaxed text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent/60"
       />
 
@@ -76,6 +141,46 @@ export function SpecForm() {
           </button>
         ))}
       </div>
+
+      {/* drawing upload */}
+      <label className="tech-label mt-5 block">technical drawing (optional)</label>
+      <div
+        onClick={() => inputRef.current?.click()}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragging(false);
+          addFiles(e.dataTransfer.files);
+        }}
+        className={`mt-2 cursor-pointer rounded-[var(--radius-tech)] border border-dashed px-4 py-5 text-center text-[0.8rem] transition-colors ${
+          dragging ? "border-accent/70 text-ink" : "border-line text-ink-dim hover:border-accent/40"
+        }`}
+      >
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/png,image/jpeg"
+          multiple
+          hidden
+          onChange={(e) => {
+            if (e.target.files) addFiles(e.target.files);
+            e.target.value = "";
+          }}
+        />
+        drop a JPEG/PNG engineering drawing here, or click to choose (up to {MAX_FILES})
+      </div>
+
+      {files.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-2.5">
+          {files.map((f, i) => (
+            <Thumb key={`${f.name}-${i}`} file={f} onRemove={() => setFiles((p) => p.filter((_, j) => j !== i))} />
+          ))}
+        </div>
+      )}
 
       {/* primary controls */}
       <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-[1fr_1fr_auto]">
@@ -102,11 +207,17 @@ export function SpecForm() {
         </div>
         <motion.button
           whileTap={{ scale: 0.97 }}
-          onClick={submit}
-          disabled={!spec.trim() || submitting}
+          onClick={primaryAction}
+          disabled={!canStart}
           className="self-end rounded-[var(--radius-tech)] bg-accent px-6 py-2.5 font-display text-base font-semibold uppercase tracking-wider text-[#1a0e05] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
         >
-          {submitting ? "starting…" : "Generate ▸"}
+          {interpreting
+            ? "reading…"
+            : submitting
+              ? "starting…"
+              : files.length > 0
+                ? "Read drawing ▸"
+                : "Generate ▸"}
         </motion.button>
       </div>
 
@@ -146,6 +257,108 @@ export function SpecForm() {
         </p>
       )}
       <p className="mt-3 tech-label">⌘/ctrl + enter to run</p>
+    </div>
+  );
+}
+
+function ReviewPanel({
+  files,
+  interpretation,
+  onChange,
+  onBack,
+  onGenerate,
+  submitting,
+  error,
+}: {
+  files: File[];
+  interpretation: string;
+  onChange: (v: string) => void;
+  onBack: () => void;
+  onGenerate: () => void;
+  submitting: boolean;
+  error: string | null;
+}) {
+  return (
+    <div className="panel panel-ticks p-5 sm:p-6">
+      <label className="tech-label">review extracted dimensions</label>
+      <p className="mt-1 text-[0.82rem] text-ink-dim">
+        correct anything the drawing reader got wrong — the drawing image is still sent as the
+        source of truth, so this only guides the build.
+      </p>
+
+      {files.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-2.5">
+          {files.map((f, i) => (
+            <Thumb key={`${f.name}-${i}`} file={f} />
+          ))}
+        </div>
+      )}
+
+      <textarea
+        value={interpretation}
+        onChange={(e) => onChange(e.target.value)}
+        rows={16}
+        className="mt-3 w-full resize-y rounded-[var(--radius-tech)] border border-line bg-[#0c1016] p-3.5 font-mono text-[0.82rem] leading-relaxed text-ink outline-none transition-colors focus:border-accent/60"
+      />
+
+      <div className="mt-4 flex items-center justify-between gap-3">
+        <button
+          onClick={onBack}
+          disabled={submitting}
+          className="tech-label transition-colors hover:text-ink disabled:opacity-40"
+        >
+          ◂ edit inputs
+        </button>
+        <motion.button
+          whileTap={{ scale: 0.97 }}
+          onClick={onGenerate}
+          disabled={submitting}
+          className="rounded-[var(--radius-tech)] bg-accent px-6 py-2.5 font-display text-base font-semibold uppercase tracking-wider text-[#1a0e05] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {submitting ? "starting…" : "Generate ▸"}
+        </motion.button>
+      </div>
+
+      {error && (
+        <p className="mt-4 rounded-[var(--radius-tech)] border border-bad/40 bg-bad/10 px-3 py-2 text-[0.8rem] text-bad">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function Thumb({ file, onRemove }: { file: File; onRemove?: () => void }) {
+  // Create the object URL inside the effect (not useMemo) so each StrictMode
+  // double-invoke makes its own URL and revokes exactly that one — a memoized
+  // URL would be revoked by the first cleanup and leave the <img> broken.
+  const [url, setUrl] = useState("");
+  useEffect(() => {
+    const u = URL.createObjectURL(file);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- object-URL pattern; sync set is intentional
+    setUrl(u);
+    return () => URL.revokeObjectURL(u);
+  }, [file]);
+
+  return (
+    <div className="relative">
+      {url && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={url}
+          alt={file.name}
+          className="h-24 w-auto rounded-[var(--radius-tech)] border border-line bg-[#0c1016] object-contain"
+        />
+      )}
+      {onRemove && (
+        <button
+          onClick={onRemove}
+          aria-label={`remove ${file.name}`}
+          className="absolute -right-2 -top-2 flex h-5 w-5 items-center justify-center rounded-full border border-line bg-[#0c1016] text-[0.7rem] text-ink-dim transition-colors hover:border-bad/60 hover:text-bad"
+        >
+          ×
+        </button>
+      )}
     </div>
   );
 }

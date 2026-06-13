@@ -133,7 +133,7 @@ def _read_events(client, run_id):
 def test_start_run_streams_started_iterations_result(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch, scores=[5, 9])
 
-    run_id = client.post("/api/runs", json={"spec": "a cube"}).json()["run_id"]
+    run_id = client.post("/api/runs", data={"spec": "a cube"}).json()["run_id"]
     events = _read_events(client, run_id)
 
     types = [e["type"] for e in events]
@@ -154,7 +154,7 @@ def test_start_run_streams_started_iterations_result(tmp_path, monkeypatch):
 def test_failed_iteration_streams_with_no_urls(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch, scores=[0, 9])
 
-    run_id = client.post("/api/runs", json={"spec": "x"}).json()["run_id"]
+    run_id = client.post("/api/runs", data={"spec": "x"}).json()["run_id"]
     events = _read_events(client, run_id)
 
     first = events[1]
@@ -168,7 +168,10 @@ def test_config_overrides_reach_run(tmp_path, monkeypatch):
 
     run_id = client.post(
         "/api/runs",
-        json={"spec": "x", "config": {"max_iterations": 3, "score_threshold": 9}},
+        data={
+            "spec": "x",
+            "config": json.dumps({"max_iterations": 3, "score_threshold": 9}),
+        },
     ).json()["run_id"]
     events = _read_events(client, run_id)
 
@@ -179,7 +182,7 @@ def test_config_overrides_reach_run(tmp_path, monkeypatch):
 def test_live_iteration_artifact_is_served(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch, scores=[9])
 
-    run_id = client.post("/api/runs", json={"spec": "x"}).json()["run_id"]
+    run_id = client.post("/api/runs", data={"spec": "x"}).json()["run_id"]
     _read_events(client, run_id)  # drain so the run completes
 
     resp = client.get(f"/api/runs/{run_id}/iterations/1/model.stl")
@@ -305,3 +308,113 @@ def test_get_unknown_run_404(tmp_path):
     client = TestClient(create_app(runs_dir=tmp_path))
 
     assert client.get("/api/runs/nope").status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# Phase 4: drawing input (multipart upload + interpret + input artifacts)
+# --------------------------------------------------------------------------- #
+PNG = b"\x89PNG\r\n\x1a\nfakepngdata"
+
+
+def test_interpret_endpoint_returns_digest(tmp_path, monkeypatch):
+    async def fake_interpret(agent, *, spec, drawings):
+        assert len(drawings) == 1 and drawings[0].media_type == "image/png"
+        return "ENVELOPE 85 x 135 x 25, Ø15 THRU"
+
+    monkeypatch.setattr("cad_gen.web.server.interpret_drawing", fake_interpret)
+    client = TestClient(create_app(runs_dir=tmp_path))
+
+    resp = client.post(
+        "/api/drawings/interpret",
+        data={"spec": ""},
+        files=[("drawings", ("d.png", PNG, "image/png"))],
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["interpretation"] == "ENVELOPE 85 x 135 x 25, Ø15 THRU"
+
+
+def test_start_run_multipart_forwards_drawing(tmp_path, monkeypatch):
+    captured: dict = {}
+
+    async def fake_generate_cad(spec, config=None, *, on_iteration=None, **kwargs):
+        captured["spec"] = spec
+        captured["drawings"] = kwargs.get("drawings")
+        captured["interpretation"] = kwargs.get("interpretation")
+        rec = IterationRecord(
+            index=1,
+            execution=ExecutionResult(success=False, code="x", duration_s=0.0),
+        )
+        return RunResult(
+            accepted=False, spec=spec, best=rec, iterations=[rec], run_dir=tmp_path / "r"
+        )
+
+    monkeypatch.setattr("cad_gen.web.runs.generate_cad", fake_generate_cad)
+    client = TestClient(create_app(runs_dir=tmp_path))
+
+    resp = client.post(
+        "/api/runs",
+        data={"spec": "", "interpretation": "USER DIMS"},
+        files=[("drawings", ("orig.png", PNG, "image/png"))],
+    )
+    assert resp.status_code == 200
+    _read_events(client, resp.json()["run_id"])  # wait for the worker thread to finish
+
+    assert captured["spec"] == ""
+    assert captured["interpretation"] == "USER DIMS"
+    assert captured["drawings"] is not None and len(captured["drawings"]) == 1
+    assert captured["drawings"][0].media_type == "image/png"
+
+
+def test_reject_non_image_upload(tmp_path):
+    client = TestClient(create_app(runs_dir=tmp_path))
+
+    resp = client.post(
+        "/api/runs",
+        data={"spec": ""},
+        files=[("drawings", ("notes.txt", b"just text", "text/plain"))],
+    )
+
+    assert resp.status_code == 422
+
+
+def test_start_run_requires_spec_or_drawing(tmp_path):
+    client = TestClient(create_app(runs_dir=tmp_path))
+
+    assert client.post("/api/runs", data={"spec": ""}).status_code == 422
+
+
+def test_input_artifact_served_from_disk(tmp_path):
+    run_dir = tmp_path / "20260613_160000"
+    (run_dir / "input").mkdir(parents=True)
+    (run_dir / "input" / "drawing_01.png").write_bytes(PNG)
+    client = TestClient(create_app(runs_dir=tmp_path))
+
+    resp = client.get("/api/runs/20260613_160000/input/drawing_01.png")
+
+    assert resp.status_code == 200
+    assert resp.content == PNG
+
+
+def test_input_artifact_served_from_memory_for_live_run(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch, scores=[9])
+
+    run_id = client.post(
+        "/api/runs",
+        data={"spec": "x"},
+        files=[("drawings", ("orig.jpg", PNG, "image/jpeg"))],
+    ).json()["run_id"]
+    resp = client.get(f"/api/runs/{run_id}/input/drawing_01.jpg")
+
+    assert resp.status_code == 200
+    assert resp.content == PNG
+    assert resp.headers["content-type"].startswith("image/jpeg")
+
+
+def test_input_artifact_traversal_rejected(tmp_path):
+    from fastapi import HTTPException
+
+    from cad_gen.web.runs import input_artifact
+
+    with pytest.raises(HTTPException):
+        input_artifact("somerun", "../../etc/passwd", tmp_path)

@@ -23,14 +23,39 @@ async function jsonOrThrow<T>(resp: Response): Promise<T> {
   return resp.json() as Promise<T>;
 }
 
+/**
+ * Start a run. Sent as multipart/form-data so optional drawing image(s) can ride
+ * along. `interpretation` is the (possibly user-edited) extracted-dimensions digest.
+ * The browser sets the multipart Content-Type/boundary — do not set it manually.
+ */
 export async function startRun(
   spec: string,
   config: RunConfigInput,
+  drawings: File[] = [],
+  interpretation?: string,
 ): Promise<{ run_id: string }> {
-  const resp = await fetch(apiUrl("/api/runs"), {
+  const fd = new FormData();
+  fd.append("spec", spec);
+  fd.append("config", JSON.stringify(config));
+  if (interpretation != null) fd.append("interpretation", interpretation);
+  for (const f of drawings) fd.append("drawings", f, f.name);
+  const resp = await fetch(apiUrl("/api/runs"), { method: "POST", body: fd });
+  return jsonOrThrow(resp);
+}
+
+/** Extract a dimensions digest from drawing(s) for the user to review before generating. */
+export async function interpretDrawing(
+  spec: string,
+  config: RunConfigInput,
+  drawings: File[],
+): Promise<{ interpretation: string }> {
+  const fd = new FormData();
+  fd.append("spec", spec);
+  fd.append("config", JSON.stringify(config));
+  for (const f of drawings) fd.append("drawings", f, f.name);
+  const resp = await fetch(apiUrl("/api/drawings/interpret"), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ spec, config }),
+    body: fd,
   });
   return jsonOrThrow(resp);
 }

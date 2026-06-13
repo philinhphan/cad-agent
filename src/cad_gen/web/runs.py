@@ -17,8 +17,10 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
+from fastapi.responses import FileResponse, Response
 
-from cad_gen.models import IterationRecord, RunConfig, RunResult
+from cad_gen.imaging import drawing_filename
+from cad_gen.models import DrawingAttachment, IterationRecord, RunConfig, RunResult
 from cad_gen.orchestrator import generate_cad
 
 _SENTINEL = object()
@@ -32,6 +34,8 @@ class RunHandle:
     run_id: str
     spec: str
     config: RunConfig
+    drawings: list[DrawingAttachment] = field(default_factory=list)
+    interpretation: str | None = None
     events: "queue.Queue[tuple[Any, Any]]" = field(default_factory=queue.Queue)
     status: str = "running"  # running | done | error
     run_dir: Path | None = None
@@ -39,16 +43,33 @@ class RunHandle:
     # index -> {artifact name -> absolute path}
     artifacts: dict[int, dict[str, Path]] = field(default_factory=dict)
 
+    @property
+    def drawing_names(self) -> list[str]:
+        return [drawing_filename(i, d.media_type) for i, d in enumerate(self.drawings, 1)]
+
 
 # Process-wide registry of live/finished runs (v1: in-memory, never evicted).
 RUNS: dict[str, RunHandle] = {}
 
 
-def start_run(spec: str, config: RunConfig, runs_dir: Path) -> RunHandle:
+def start_run(
+    spec: str,
+    config: RunConfig,
+    runs_dir: Path,
+    *,
+    drawings: list[DrawingAttachment] | None = None,
+    interpretation: str | None = None,
+) -> RunHandle:
     """Register a run and launch its generation worker thread."""
     run_id = uuid.uuid4().hex[:12]
     config = config.model_copy(update={"out_dir": runs_dir})
-    handle = RunHandle(run_id=run_id, spec=spec, config=config)
+    handle = RunHandle(
+        run_id=run_id,
+        spec=spec,
+        config=config,
+        drawings=drawings or [],
+        interpretation=interpretation,
+    )
     RUNS[run_id] = handle
     threading.Thread(target=_worker, args=(handle,), daemon=True).start()
     return handle
@@ -61,7 +82,13 @@ def _worker(handle: RunHandle) -> None:
 
     try:
         result = asyncio.run(
-            generate_cad(handle.spec, handle.config, on_iteration=on_iteration)
+            generate_cad(
+                handle.spec,
+                handle.config,
+                drawings=handle.drawings,
+                interpretation=handle.interpretation,
+                on_iteration=on_iteration,
+            )
         )
         handle.run_dir = result.run_dir
         handle.result = result
@@ -94,6 +121,8 @@ def started_event(handle: RunHandle) -> dict:
         "run_id": handle.run_id,
         "spec": handle.spec,
         "config": handle.config.model_dump(mode="json"),
+        "drawings": handle.drawing_names,
+        "interpretation": handle.interpretation,
     }
 
 
@@ -181,6 +210,7 @@ def list_runs(runs_dir: Path) -> list[dict]:
                 "accepted": result.accepted,
                 "score": result.best.effective_score,
                 "n_iterations": len(result.iterations),
+                "drawings": result.drawings,
                 "created_at": d.stat().st_mtime,
             }
         )
@@ -194,6 +224,8 @@ def run_detail(run_id: str, runs_dir: Path) -> dict:
         "spec": result.spec,
         "accepted": result.accepted,
         "best_index": result.best.index,
+        "drawings": result.drawings,
+        "interpretation": result.interpretation,
         "iterations": [iteration_payload(run_id, r) for r in result.iterations],
     }
 
@@ -224,6 +256,22 @@ def iteration_artifact_path(run_id: str, index: int, name: str, runs_dir: Path) 
             return safe_artifact(path, runs_dir)
 
     return safe_artifact(_disk_artifact_path(run_id, index, name, runs_dir), runs_dir)
+
+
+def input_artifact(run_id: str, name: str, runs_dir: Path) -> Response:
+    """Serve an input drawing: from memory for a live run, from disk for a past run."""
+    if "/" in name or "\\" in name or ".." in name:
+        raise HTTPException(status_code=404, detail="unknown artifact")
+
+    handle = RUNS.get(run_id)
+    if handle is not None and handle.drawings:
+        by_name = dict(zip(handle.drawing_names, handle.drawings, strict=True))
+        d = by_name.get(name)
+        if d is not None:
+            return Response(content=d.data, media_type=d.media_type)
+
+    path = safe_artifact(Path(runs_dir) / run_id / "input" / name, runs_dir)
+    return FileResponse(path)
 
 
 def _disk_artifact_path(run_id: str, index: int, name: str, runs_dir: Path) -> Path:

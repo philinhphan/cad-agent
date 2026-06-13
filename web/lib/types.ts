@@ -61,6 +61,8 @@ export interface StartedEvent {
   run_id: string;
   spec: string;
   config: RunConfig;
+  drawings?: string[];
+  interpretation?: string | null;
 }
 export interface IterationEvent extends IterationPayload {
   type: "iteration";
@@ -71,6 +73,8 @@ export interface ResultEvent {
   result: {
     accepted: boolean;
     spec: string;
+    drawings?: string[];
+    interpretation?: string | null;
     best: IterationRecord;
     iterations: IterationRecord[];
   };
@@ -88,6 +92,7 @@ export interface RunSummary {
   accepted: boolean;
   score: number;
   n_iterations: number;
+  drawings?: string[];
   created_at: number; // epoch seconds
 }
 
@@ -96,6 +101,8 @@ export interface RunDetail {
   spec: string;
   accepted: boolean;
   best_index: number;
+  drawings?: string[];
+  interpretation?: string | null;
   iterations: IterationPayload[];
 }
 

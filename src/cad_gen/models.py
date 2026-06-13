@@ -7,6 +7,18 @@ from pydantic import BaseModel, Field, model_validator
 DEFAULT_MODEL = "openai:gpt-5.2"
 
 
+class DrawingAttachment(BaseModel):
+    """An input engineering drawing supplied alongside (or instead of) a text spec.
+
+    Carried at the call boundary only — the raw bytes are persisted to disk under the
+    run directory, never embedded in `run_result.json` (which keeps only filenames).
+    """
+
+    filename: str
+    media_type: str  # "image/jpeg" | "image/png"
+    data: bytes
+
+
 class GeometryMetrics(BaseModel):
     """Measured properties of an executed CAD model."""
 
@@ -78,6 +90,8 @@ class RunResult(BaseModel):
 
     accepted: bool
     spec: str
+    drawings: list[str] = []  # persisted input-drawing filenames under run_dir/input/
+    interpretation: str | None = None  # final (possibly edited) extracted-dimensions digest
     best: IterationRecord
     iterations: list[IterationRecord]
     run_dir: Path
