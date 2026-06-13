@@ -107,11 +107,16 @@ falls back to a global uvicorn that can't import the app):
 uv sync --extra web
 
 # terminal 1 — backend (FastAPI + SSE), serves on :8000
-uv run --extra web uvicorn cad_gen.web.server:app --reload
+# --reload-dir scopes the watcher to source: each run writes artifacts under
+# runs/, and watching those would reload the server mid-run and kill it.
+uv run --extra web uvicorn cad_gen.web.server:app --reload --reload-dir src/cad_gen
 
 # terminal 2 — frontend (Next.js), serves on :3000
 cd web && pnpm install && pnpm dev
 ```
+
+(Or just drop `--reload` / `--reload-dir` and restart manually — the default
+watcher covers the whole repo, so it reloads whenever a run writes to `runs/`.)
 
 The web view also accepts a **technical drawing** (JPEG/PNG): drop it on the form,
 review/edit the auto-extracted dimensions, then generate. Drawing + text both work.

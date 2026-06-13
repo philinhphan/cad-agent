@@ -24,7 +24,11 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={`${saira.variable} ${jetbrains.variable} h-full`}>
+    <html
+      lang="en"
+      className={`${saira.variable} ${jetbrains.variable} h-full`}
+      suppressHydrationWarning
+    >
       <body className="min-h-full flex flex-col">
         <SiteHeader />
         <main className="flex-1">{children}</main>
