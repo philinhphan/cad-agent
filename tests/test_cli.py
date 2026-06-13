@@ -2,7 +2,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from cad_gen.cli import app
+from cad_gen.cli import _load_drawing, app
 from cad_gen.models import (
     Critique,
     ExecutionResult,
@@ -12,6 +12,7 @@ from cad_gen.models import (
 )
 
 runner = CliRunner()
+FIXTURE_PNG = Path(__file__).parent / "fixtures" / "drawing.png"
 
 
 def _fake_run_result(accepted: bool, run_dir: Path) -> RunResult:
@@ -53,6 +54,8 @@ def test_help_lists_all_options():
         "--critic-model",
         "--timeout",
         "--out",
+        "--drawing",
+        "--no-review",
     ):
         assert option in result.output
 
@@ -69,6 +72,7 @@ def test_missing_api_key_exits_with_code_2(tmp_path, monkeypatch):
 
 def test_accepted_run_exits_0_and_reports_progress(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")  # default critic is google:gemini-3.5-flash
 
     captured_kwargs = {}
 
@@ -89,6 +93,7 @@ def test_accepted_run_exits_0_and_reports_progress(tmp_path, monkeypatch):
 
 def test_rejected_run_exits_1(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")  # default critic is google:gemini-3.5-flash
 
     async def fake_generate_cad(spec, config=None, **kwargs):
         return _fake_run_result(False, tmp_path / "run")
@@ -102,6 +107,7 @@ def test_rejected_run_exits_1(tmp_path, monkeypatch):
 
 def test_config_flags_reach_run_config(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")  # default critic is google:gemini-3.5-flash
 
     seen = {}
 
@@ -134,3 +140,54 @@ def test_config_flags_reach_run_config(tmp_path, monkeypatch):
     assert cfg.critic_model == "openai:gpt-5.2"
     assert cfg.exec_timeout_s == 30
     assert cfg.out_dir == tmp_path / "elsewhere"
+
+
+def test_no_spec_and_no_drawing_exits_2(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 2
+    assert "drawing" in result.output.lower()
+
+
+def test_load_drawing_infers_jpeg_from_suffix(tmp_path):
+    path = tmp_path / "part.jpg"
+    path.write_bytes(b"\xff\xd8\xff\xe0 not really a jpeg but suffix wins")
+
+    att = _load_drawing(path)
+
+    assert att.media_type == "image/jpeg"
+    assert att.filename == "part.jpg"
+
+
+def test_drawing_run_threads_drawing_and_interpretation(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")  # default critic is google:gemini-3.5-flash
+    captured: dict = {}
+
+    async def fake_interpret_drawing(agent, *, spec, drawings):
+        return "EXTRACTED: 85 x 135 x 25, Ø15 THRU"
+
+    async def fake_generate_cad(spec, config=None, **kwargs):
+        captured.update(kwargs)
+        captured["spec"] = spec
+        result = _fake_run_result(True, tmp_path / "run")
+        kwargs["on_iteration"](result.iterations[0])
+        return result
+
+    monkeypatch.setattr("cad_gen.cli.interpret_drawing", fake_interpret_drawing)
+    monkeypatch.setattr("cad_gen.cli.generate_cad", fake_generate_cad)
+
+    result = runner.invoke(
+        app, ["--drawing", str(FIXTURE_PNG), "--no-review", "--out", str(tmp_path)]
+    )
+
+    assert result.exit_code == 0
+    assert captured["spec"] == ""  # drawing-only run
+    drawings = captured["drawings"]
+    assert len(drawings) == 1
+    assert drawings[0].media_type == "image/png"
+    assert drawings[0].filename == "drawing.png"
+    assert captured["interpretation"] == "EXTRACTED: 85 x 135 x 25, Ø15 THRU"

@@ -4,7 +4,20 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field, model_validator
 
-DEFAULT_MODEL = "openai:gpt-5.2"
+DEFAULT_MODEL = "openai:gpt-5.5"  # generator
+DEFAULT_CRITIC_MODEL = "google:gemini-3.5-flash"  # vision critic
+
+
+class DrawingAttachment(BaseModel):
+    """An input engineering drawing supplied alongside (or instead of) a text spec.
+
+    Carried at the call boundary only — the raw bytes are persisted to disk under the
+    run directory, never embedded in `run_result.json` (which keeps only filenames).
+    """
+
+    filename: str
+    media_type: str  # "image/jpeg" | "image/png"
+    data: bytes
 
 
 class GeometryMetrics(BaseModel):
@@ -69,7 +82,7 @@ class RunConfig(BaseModel):
     @model_validator(mode="after")
     def _default_critic_model(self) -> "RunConfig":
         if self.critic_model is None:
-            self.critic_model = self.model
+            self.critic_model = DEFAULT_CRITIC_MODEL
         return self
 
 
@@ -78,6 +91,8 @@ class RunResult(BaseModel):
 
     accepted: bool
     spec: str
+    drawings: list[str] = []  # persisted input-drawing filenames under run_dir/input/
+    interpretation: str | None = None  # final (possibly edited) extracted-dimensions digest
     best: IterationRecord
     iterations: list[IterationRecord]
     run_dir: Path
