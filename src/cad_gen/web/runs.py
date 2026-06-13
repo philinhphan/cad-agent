@@ -97,13 +97,18 @@ def started_event(handle: RunHandle) -> dict:
     }
 
 
+def _strip_paths(record_data: dict) -> dict:
+    """Remove absolute filesystem paths from a serialized IterationRecord."""
+    if record_data.get("execution"):
+        record_data["execution"].pop("stl_path", None)
+        record_data["execution"].pop("step_path", None)
+    record_data.pop("render_path", None)
+    return record_data
+
+
 def iteration_payload(run_id: str, record: IterationRecord) -> dict:
     """Cleaned record (no absolute fs paths) + browser-facing artifact URLs."""
-    data = record.model_dump(mode="json")
-    if data.get("execution"):
-        data["execution"].pop("stl_path", None)
-        data["execution"].pop("step_path", None)
-    data.pop("render_path", None)
+    data = _strip_paths(record.model_dump(mode="json"))
 
     urls: dict[str, str] = {}
     ex = record.execution
@@ -120,6 +125,9 @@ def iteration_event(run_id: str, record: IterationRecord) -> dict:
 def result_event(run_id: str, result: RunResult) -> dict:
     data = result.model_dump(mode="json")
     data.pop("run_dir", None)
+    _strip_paths(data["best"])
+    for iteration in data["iterations"]:
+        _strip_paths(iteration)
     return {"type": "result", "result": data, "run_dir": result.run_dir.name}
 
 
