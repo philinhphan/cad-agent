@@ -78,7 +78,8 @@ async def generate_cad(
 
         if record.effective_score >= config.score_threshold:
             break
-        feedback = _build_feedback(record)
+        champion = max(iterations, key=lambda r: (r.effective_score, r.index))
+        feedback = _build_feedback(champion, latest=record)
 
     best = max(iterations, key=lambda r: (r.effective_score, r.index))
     result = RunResult(
@@ -106,12 +107,17 @@ def _new_run_dir(out_dir: Path) -> Path:
     return run_dir
 
 
-def _build_feedback(record: IterationRecord) -> str:
-    """Refinement context injected into the next iteration's prompt."""
-    if record.execution is None or not record.execution.success:
+def _build_feedback(champion: IterationRecord, latest: IterationRecord) -> str:
+    """Refinement context for the next iteration, anchored on the best result so
+    far so the loop cannot drift away from a good design.
+
+    `champion` is the highest-scoring iteration to date; `latest` is the one that
+    just ran (used only to warn the model when its most recent change regressed).
+    """
+    if champion.execution is None or not champion.execution.success:
         error = (
-            f"Last error:\n{record.execution.error}"
-            if record.execution is not None
+            f"Last error:\n{champion.execution.error}"
+            if champion.execution is not None
             else "No code was produced at all."
         )
         return (
@@ -121,18 +127,27 @@ def _build_feedback(record: IterationRecord) -> str:
             "with execute_cad_code."
         )
 
-    critique = record.critique
+    critique = champion.critique
     issues = "\n".join(f"- {i}" for i in critique.issues) or "- (none listed)"
     suggestions = "\n".join(f"- {s}" for s in critique.suggestions) or "- (none)"
-    return (
+    feedback = (
         "---\n"
-        f"PREVIOUS ATTEMPT — a reviewer scored it {critique.score}/10.\n"
-        f"Code:\n```python\n{record.execution.code}\n```\n"
+        f"BEST VERSION SO FAR — a reviewer scored it {critique.score}/10. Start "
+        "from THIS code; keep everything the reviewer found correct and change only "
+        "what is needed to fix the issues below.\n"
+        f"Code:\n```python\n{champion.execution.code}\n```\n"
         f"Reviewer issues:\n{issues}\n"
         f"Reviewer suggestions:\n{suggestions}\n"
         "Produce an improved version that fixes every issue, then validate it with "
         "execute_cad_code."
     )
+    if latest is not champion and latest.effective_score < champion.effective_score:
+        feedback += (
+            f"\n\nNote: your most recent change scored only {latest.effective_score}"
+            "/10 — it regressed below the best version above. Do not repeat that "
+            "change; improve the best version instead."
+        )
+    return feedback
 
 
 def _persist_final(result: RunResult) -> None:

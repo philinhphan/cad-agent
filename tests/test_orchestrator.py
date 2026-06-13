@@ -131,6 +131,47 @@ async def test_refine_loop_improves_then_accepts(tmp_path):
     assert "9" in report and "a cube with a hole" in report
 
 
+async def test_refine_anchors_on_best_not_previous_regression(tmp_path):
+    """When an iteration regresses below the best so far, the next iteration must
+    refine the champion — not the regression — so the loop cannot diverge away
+    from a good result (the failure mode the mug E2E exposed)."""
+    code_c = "import cadquery as cq\nresult = cq.Workplane().box(10, 10, 10).faces('>Z').hole(4).edges('|Z').fillet(0.5)  # v3"
+    prompts: list[str] = []
+    critic_calls: list[int] = []
+    generator = scripted_generator(
+        [
+            ("tool", GOOD_V1), ("text", "champion body"),
+            ("tool", GOOD_V2), ("text", "regressed attempt"),
+            ("tool", code_c), ("text", "final"),
+        ],
+        prompts,
+    )
+    # iter1=6 (champion), iter2=3 (regression below champion), iter3=9 (accept)
+    critic = scripted_critic(
+        [critique_args(6, ["needs a hole"]), critique_args(3, ["broke the body"]), critique_args(9, [])],
+        critic_calls,
+    )
+    config = RunConfig(max_iterations=5, score_threshold=8, out_dir=tmp_path / "runs")
+
+    result = await generate_cad(
+        "spec",
+        config,
+        generator_model=generator,
+        critic_model=critic,
+        executor=stub_executor,
+        renderer=stub_renderer,
+    )
+
+    assert result.accepted is True
+    assert result.best.index == 3
+    # iteration 3 must be anchored on the champion (iter1, GOOD_V1), not the
+    # regressed iteration 2 (GOOD_V2).
+    assert GOOD_V1 in prompts[2]
+    assert GOOD_V2 not in prompts[2]
+    assert "needs a hole" in prompts[2], "champion's critique must carry forward"
+    assert "regress" in prompts[2].lower(), "model should be told its last change regressed"
+
+
 async def test_budget_exhaustion_returns_best_iteration(tmp_path):
     prompts: list[str] = []
     critic_calls: list[int] = []
