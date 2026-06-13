@@ -31,8 +31,12 @@ spec ─► ORCHESTRATOR (outer loop: quality)
 
 ```bash
 uv sync
-cp .env.example .env   # paste your OPENAI_API_KEY
+cp .env.example .env   # paste your OPENAI_API_KEY (generator) + GEMINI_API_KEY (critic)
 ```
+
+By default the generator runs on `openai:gpt-5.5` and the vision critic on
+`google:gemini-3.5-flash`, so both an OpenAI and a Google (Gemini) key are needed
+unless you point `--model`/`--critic-model` at a single provider.
 
 ## Usage
 
@@ -48,8 +52,8 @@ uv run cad-gen "rectangular mounting bracket 60x40x8mm with 4x M4 clearance \
 |---|---|---|
 | `--max-iterations, -n` | 5 | outer self-refine iteration budget |
 | `--threshold, -t` | 8 | critic score (0–10) required to accept |
-| `--model, -m` | `openai:gpt-5.2` | generator model (`provider:name`) |
-| `--critic-model` | same as `--model` | vision critic model |
+| `--model, -m` | `openai:gpt-5.5` | generator model (`provider:name`) |
+| `--critic-model` | `google:gemini-3.5-flash` | vision critic model |
 | `--timeout` | 60 | sandbox seconds per execution attempt |
 | `--out, -o` | `runs/` | artifacts directory |
 

@@ -4,7 +4,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field, model_validator
 
-DEFAULT_MODEL = "openai:gpt-5.2"
+DEFAULT_MODEL = "openai:gpt-5.5"  # generator
+DEFAULT_CRITIC_MODEL = "google:gemini-3.5-flash"  # vision critic
 
 
 class DrawingAttachment(BaseModel):
@@ -81,7 +82,7 @@ class RunConfig(BaseModel):
     @model_validator(mode="after")
     def _default_critic_model(self) -> "RunConfig":
         if self.critic_model is None:
-            self.critic_model = self.model
+            self.critic_model = DEFAULT_CRITIC_MODEL
         return self
 
 

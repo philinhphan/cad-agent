@@ -47,10 +47,10 @@ def generate(
         8, "--threshold", "-t", min=0, max=10, help="Critic score needed to accept."
     ),
     model: str = typer.Option(
-        None, "--model", "-m", help="Generator model, e.g. openai:gpt-5.2."
+        None, "--model", "-m", help="Generator model (default openai:gpt-5.5)."
     ),
     critic_model: str = typer.Option(
-        None, "--critic-model", help="Critic model (defaults to --model)."
+        None, "--critic-model", help="Vision critic model (default google:gemini-3.5-flash)."
     ),
     timeout: float = typer.Option(
         60.0, "--timeout", help="Sandbox execution timeout per attempt (seconds)."
@@ -173,13 +173,30 @@ def _edit_text(text: str) -> str:
         Path(tmp).unlink(missing_ok=True)
 
 
+# provider prefix -> env var(s) that satisfy it (any one suffices).
+_PROVIDER_KEYS = {
+    "openai": ("OPENAI_API_KEY",),
+    "google": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    "google-gla": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    "google-vertex": ("GOOGLE_API_KEY",),
+    "anthropic": ("ANTHROPIC_API_KEY",),
+}
+
+
 def _require_api_key(config: RunConfig) -> None:
     providers = {m.split(":", 1)[0] for m in (config.model, config.critic_model)}
-    if "openai" in providers and not os.environ.get("OPENAI_API_KEY"):
-        console.print(
-            "[red bold]OPENAI_API_KEY is not set.[/red bold] "
-            "Add it to a .env file (see .env.example) or export it."
-        )
+    missing = [
+        (p, keys)
+        for p in providers
+        if (keys := _PROVIDER_KEYS.get(p)) and not any(os.environ.get(k) for k in keys)
+    ]
+    if missing:
+        for provider, keys in missing:
+            console.print(
+                f"[red bold]{' or '.join(keys)} is not set[/red bold] — required by "
+                f"the '{provider}' model provider."
+            )
+        console.print("Add it to a .env file (see .env.example) or export it.")
         raise typer.Exit(2)
 
 

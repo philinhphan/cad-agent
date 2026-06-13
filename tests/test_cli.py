@@ -72,6 +72,7 @@ def test_missing_api_key_exits_with_code_2(tmp_path, monkeypatch):
 
 def test_accepted_run_exits_0_and_reports_progress(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")  # default critic is google:gemini-3.5-flash
 
     captured_kwargs = {}
 
@@ -92,6 +93,7 @@ def test_accepted_run_exits_0_and_reports_progress(tmp_path, monkeypatch):
 
 def test_rejected_run_exits_1(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")  # default critic is google:gemini-3.5-flash
 
     async def fake_generate_cad(spec, config=None, **kwargs):
         return _fake_run_result(False, tmp_path / "run")
@@ -105,6 +107,7 @@ def test_rejected_run_exits_1(tmp_path, monkeypatch):
 
 def test_config_flags_reach_run_config(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")  # default critic is google:gemini-3.5-flash
 
     seen = {}
 
@@ -161,6 +164,7 @@ def test_load_drawing_infers_jpeg_from_suffix(tmp_path):
 
 def test_drawing_run_threads_drawing_and_interpretation(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")  # default critic is google:gemini-3.5-flash
     captured: dict = {}
 
     async def fake_interpret_drawing(agent, *, spec, drawings):

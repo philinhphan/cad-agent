@@ -99,20 +99,21 @@ class TestIterationRecord:
 class TestRunConfig:
     def test_defaults(self):
         cfg = RunConfig()
-        assert cfg.model == "openai:gpt-5.2"
-        assert cfg.critic_model == cfg.model
+        assert cfg.model == "openai:gpt-5.5"
+        assert cfg.critic_model == "google:gemini-3.5-flash"
         assert cfg.max_iterations == 5
         assert cfg.score_threshold == 8
         assert cfg.exec_timeout_s == 60
         assert cfg.max_exec_attempts_per_iteration == 4
         assert cfg.out_dir == Path("runs")
 
-    def test_critic_model_follows_explicit_model(self):
+    def test_critic_model_defaults_independently_of_generator(self):
+        # The critic has its own default (vision model) — it does NOT inherit --model.
         cfg = RunConfig(model="anthropic:claude-x")
-        assert cfg.critic_model == "anthropic:claude-x"
+        assert cfg.critic_model == "google:gemini-3.5-flash"
 
     def test_critic_model_override_wins(self):
-        cfg = RunConfig(model="openai:gpt-5.2", critic_model="openai:gpt-5-mini")
+        cfg = RunConfig(model="openai:gpt-5.5", critic_model="openai:gpt-5-mini")
         assert cfg.critic_model == "openai:gpt-5-mini"
 
 

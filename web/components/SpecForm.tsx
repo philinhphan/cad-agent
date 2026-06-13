@@ -13,7 +13,7 @@ const EXAMPLES = [
 ];
 
 const DEFAULTS = {
-  model: "openai:gpt-5.2",
+  model: "openai:gpt-5.5",
   critic_model: "",
   max_iterations: 5,
   score_threshold: 8,
@@ -237,7 +237,7 @@ export function SpecForm() {
           />
           <TextField
             label="critic model"
-            placeholder="(same as model)"
+            placeholder="(default: google:gemini-3.5-flash)"
             value={cfg.critic_model}
             onChange={(v) => setCfg({ ...cfg, critic_model: v })}
           />
