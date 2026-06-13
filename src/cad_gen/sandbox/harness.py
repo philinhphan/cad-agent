@@ -65,9 +65,9 @@ def main() -> None:
 
     shape = shapes[0] if len(shapes) == 1 else cq.Compound.makeCompound(shapes)
 
-    cq.exporters.export(shape, str(out_dir / "model.stl"))
-    cq.exporters.export(shape, str(out_dir / "model.step"))
-
+    # Measure BEFORE exporting: STL export tessellates the shape, and OCCT
+    # bounding boxes computed afterwards include the mesh sag of curved faces
+    # (microns to millimetres), which corrupts exact-dimension checks.
     bb = shape.BoundingBox()
     com = shape.Center()
     metrics = {
@@ -78,6 +78,9 @@ def main() -> None:
         "n_faces": len(shape.Faces()),
     }
     (out_dir / "metrics.json").write_text(json.dumps(metrics))
+
+    cq.exporters.export(shape, str(out_dir / "model.stl"))
+    cq.exporters.export(shape, str(out_dir / "model.step"))
 
 
 if __name__ == "__main__":

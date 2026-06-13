@@ -56,7 +56,9 @@ Evaluate STRICTLY whether the geometry satisfies the specification:
   Count them in the views.
 - Do explicit dimensions match? Check numerically against the measured bounding box and
   volume — the image helps locate features, but the measurements are authoritative for
-  sizes.
+  sizes. Treat deviations smaller than 0.05 mm or 0.1% (whichever is larger) as EXACT
+  matches: they are numerical artifacts of the CAD kernel, not design errors, and must
+  not be listed as issues or cost points.
 - Are proportions and feature placement correct (centered, inset, symmetric, ...)?
 - Sanity: exactly one solid body unless the spec says otherwise; watertight should be
   true; volume must be plausible for the shape (a hollow or shelled part has far less

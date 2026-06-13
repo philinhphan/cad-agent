@@ -4,6 +4,7 @@ These spawn real subprocesses running real CadQuery — slow-ish (~3s each,
 OCCT import) but they are the contract the whole agent loop stands on.
 """
 
+import math
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,12 @@ from cad_gen.sandbox.executor import run_cad_code
 GOOD_BOX = """
 import cadquery as cq
 
-result = cq.Workplane("XY").box(20, 30, 10)
+result = (
+    cq.Workplane("XY")
+    .box(20, 30, 10)
+    .faces(">Z").workplane()
+    .hole(6)
+)
 """
 
 SHOW_OBJECT_STYLE = """
@@ -59,8 +65,12 @@ def test_good_code_produces_artifacts_and_metrics(tmp_path):
     assert r.stl_path is not None and r.stl_path.exists()
     assert r.step_path is not None and r.step_path.exists()
     assert r.metrics is not None
-    assert r.metrics.volume_mm3 == pytest.approx(20 * 30 * 10, rel=1e-3)
-    assert r.metrics.bbox_mm == pytest.approx((20.0, 30.0, 10.0), rel=1e-3)
+    assert r.metrics.volume_mm3 == pytest.approx(
+        20 * 30 * 10 - math.pi * 3**2 * 10, rel=1e-3
+    )
+    # exact, not approximately: measuring after STL export picks up the mesh
+    # tessellation sag of curved faces and pollutes the critic's dimension checks
+    assert r.metrics.bbox_mm == pytest.approx((20.0, 30.0, 10.0), abs=1e-6)
     assert r.metrics.n_solids == 1
     assert r.metrics.is_watertight is True
     assert r.code == GOOD_BOX
