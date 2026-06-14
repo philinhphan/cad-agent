@@ -1,8 +1,9 @@
 # Secrets — never commit
 .env
 
-# Generated run artifacts
-runs/
+# Generated run artifacts (repo-root only — must NOT match web/app/runs/, the
+# Next.js run-detail route, which an unanchored `runs/` pattern silently ignored)
+/runs/
 
 # Python
 __pycache__/
