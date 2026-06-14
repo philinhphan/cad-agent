@@ -1,52 +1,162 @@
-# cad-gen
+# cad-gen — Agentic Drawing → CAD
 
-Agentic text-to-CAD: turns a natural-language part specification into solid CAD
-geometry (STEP + STL) through a **self-refine loop** — an LLM writes
-[CadQuery](https://cadquery.readthedocs.io/) code, the code is executed in a
-sandboxed subprocess, the resulting geometry is rendered and **visually
-inspected by a vision-model critic** that scores it against the spec, and the
-code is refined iteratively until the quality threshold is met.
+Turn a **technical drawing** into real, manufacturable CAD geometry (**STEP + STL**)
+through a **self-refine loop**: an LLM writes [CadQuery](https://cadquery.readthedocs.io/)
+code, the code runs in a sandboxed subprocess, the resulting solid is rendered and
+**reprojected against the drawing by a deterministic geometric arbiter**, a **vision-model
+critic** scores it, and the code is refined iteratively until it passes a quality
+threshold. An optional text description can be supplied alongside the drawing to
+disambiguate.
 
-Built on [PydanticAI](https://ai.pydantic.dev/), so it is LLM-agnostic: any
-supported provider works by changing one model string (Gemini by default).
+Built on [PydanticAI](https://ai.pydantic.dev/), so it is **LLM-agnostic** — any
+supported provider works by changing one model string (Gemini by default). Ships with a
+CLI, a Python library API, and a **Next.js + FastAPI web dashboard** that streams every
+iteration live and renders the generated solid in 3D in the browser.
 
 ```
-spec ─► ORCHESTRATOR (outer loop: quality)
-          │
-          ▼
+drawing (+ optional text) ─► ORCHESTRATOR (outer loop: quality)
+                    │
+                    ├─ interpret drawing → dimension digest + structured constraints
+                    │  locate views (VLM) → front/top/side boxes
+                    ▼
    GENERATOR agent ──── execute_cad_code tool ──► subprocess sandbox
-          │    ▲                                  (CadQuery/OCCT: STL, STEP,
-          │    └── traceback retry (inner loop:    volume, bbox, watertight)
+          │    ▲                                  (CadQuery / OpenCASCADE:
+          │    └── traceback retry (inner loop:    STL, STEP, volume, bbox, watertight)
           │                        correctness)
           ▼
    RENDERER (iso / front / top / right composite PNG)
           ▼
-   CRITIC agent (vision) ─► Critique{score 0-10, issues, suggestions}
+   REPROJECT check ─► deterministic overlap score + overlay (missing/extra lines)
+          ▼
+   CRITIC agent (vision) ─► Critique{score 0-10, matches_spec, issues, suggestions}
           │
           ├─ score ≥ threshold ─► ACCEPT: final/ + report.md
-          └─ else: feedback → next iteration (budget-capped, best effort wins)
+          └─ else: feedback + overlay → next iteration (budget-capped, best effort wins)
 ```
 
-## Setup
+---
+
+## Table of contents
+
+- [Tech stack — APIs, frameworks & tools](#tech-stack--apis-frameworks--tools)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Quick start (CLI)](#quick-start-cli)
+- [Web dashboard](#web-dashboard)
+- [Library API](#library-api)
+- [Configuration reference](#configuration-reference)
+- [How it works](#how-it-works)
+- [Project structure](#project-structure)
+- [Output artifacts](#output-artifacts)
+- [Testing & development](#testing--development)
+- [Deployment](#deployment)
+- [Security notes](#security-notes)
+- [Known limitations](#known-limitations)
+- [Future work](#future-work)
+
+---
+
+## Tech stack — APIs, frameworks & tools
+
+### Core / backend (Python ≥ 3.12)
+
+| Area | Tool | Role |
+|---|---|---|
+| **Agent framework** | [PydanticAI](https://ai.pydantic.dev/) (`pydantic-ai-slim[google]`) | Provider-agnostic LLM agents (generator, critic, drawing interpreter, view locator) with typed tool calling and structured outputs |
+| **LLM provider (default)** | [Google Gemini](https://ai.google.dev/) (`google:gemini-3.5-flash`) | Generator, vision critic, and drawing view-locator. Swappable per-agent to any PydanticAI provider (e.g. `anthropic:`, `openai:`) |
+| **CAD kernel** | [CadQuery](https://cadquery.readthedocs.io/) + [OpenCASCADE / OCP](https://github.com/CadQuery/OCP) | Build solids from generated Python; export STEP, compute ground-truth metrics (volume, bbox, COM, face/solid count, watertightness) |
+| **Mesh / geometry** | [trimesh](https://trimesh.org/) | STL export and mesh handling |
+| **Rendering** | [NumPy](https://numpy.org/) z-buffer renderer | Headless 4-view composite PNG (iso/front/top/right) — no GPU/OSMesa required |
+| **Computer vision** | [OpenCV](https://opencv.org/) (`opencv-python-headless`) | Drawing line masks, primitive extraction, distance transforms, reprojection overlays |
+| **Plotting** | [Matplotlib](https://matplotlib.org/) | Axis-annotated render composites |
+| **CLI** | [Typer](https://typer.tiangolo.com/) | `cad-gen` command-line entry point |
+| **Terminal UI** | [Rich](https://rich.readthedocs.io/) | Live progress / formatted output |
+| **Config / secrets** | [python-dotenv](https://github.com/theskumar/python-dotenv) | `.env` loading |
+| **Packaging** | [uv](https://docs.astral.sh/uv/) (`uv_build`) | Locked, reproducible installs; project build backend |
+| **Lint** | [Ruff](https://docs.astral.sh/ruff/) | Linting / formatting |
+| **Tests** | [pytest](https://docs.pytest.org/) + `pytest-asyncio` | Offline test suite (no API calls) |
+
+### Web backend (optional `web` extra)
+
+| Tool | Role |
+|---|---|
+| [FastAPI](https://fastapi.tiangolo.com/) | HTTP API wrapping `generate_cad` |
+| [Uvicorn](https://www.uvicorn.org/) | ASGI server |
+| [sse-starlette](https://github.com/sysid/sse-starlette) | Server-Sent Events to stream each iteration live |
+| `python-multipart` | Spec + drawing file uploads |
+| [httpx](https://www.python-httpx.org/) | Async HTTP client |
+| [fal-client](https://fal.ai/) | Optional product-style "showcase" image generation (opt-in) |
+
+### Frontend (`web/`, Node.js)
+
+| Tool | Role |
+|---|---|
+| [Next.js 16](https://nextjs.org/) (App Router) + [React 19](https://react.dev/) | Dashboard UI |
+| [TypeScript](https://www.typescriptlang.org/) | Type-safe frontend |
+| [Three.js](https://threejs.org/) + [@react-three/fiber](https://r3f.docs.pmnd.rs/) + [drei](https://github.com/pmndrs/drei) + [three-stdlib](https://github.com/pmndrs/three-stdlib) | Interactive 3D orbit view of the generated STL |
+| [Tailwind CSS v4](https://tailwindcss.com/) | Styling |
+| [Motion](https://motion.dev/) | Animations |
+| [Shiki](https://shiki.style/) | Syntax-highlighted CadQuery code blocks |
+| [pnpm](https://pnpm.io/) | Package manager |
+
+---
+
+## Prerequisites
+
+- **Python ≥ 3.12**
+- **[uv](https://docs.astral.sh/uv/)** — the Python package/dependency manager used here.
+  Install: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- An **LLM API key** — a single **Google/Gemini** key covers all default agents.
+  ([Get one here.](https://aistudio.google.com/apikey))
+- *(Web dashboard only)* **Node.js ≥ 20** and **[pnpm](https://pnpm.io/installation)**.
+- *(Docker deploy only)* **Docker**.
+
+> A pre-configured **VS Code Dev Container** is included (`.devcontainer/`) if you prefer
+> a ready-made environment.
+
+---
+
+## Installation
 
 ```bash
+# 1. clone
+git clone <repo-url> cad-agent && cd cad-agent
+
+# 2. install Python deps into a locked virtualenv (.venv/)
 uv sync
-cp .env.example .env   # paste your GEMINI_API_KEY
+
+# 3. configure secrets
+cp .env.example .env        # then edit .env and paste your GEMINI_API_KEY
 ```
 
-By default the generator, vision critic, and drawing view-locator all run on
-`google:gemini-3.5-flash`, so one Google/Gemini key is enough unless you point
-`--model`/`--critic-model`/`CAD_GEN_VIEW_MODEL` at another provider.
+That's it for the CLI and library. The CAD kernel (CadQuery / OpenCASCADE) and the
+headless renderer are pure Python wheels — **no system OpenGL/OSMesa needed**.
 
-## Usage
+For the **web dashboard**, also install the optional backend extra and the frontend:
 
 ```bash
-uv run cad-gen "a 40mm cube with a 10mm diameter centered through-hole"
+uv sync --extra web         # FastAPI, uvicorn, SSE, multipart, fal-client
+cd web && pnpm install      # frontend deps
+```
 
-uv run cad-gen "rectangular mounting bracket 60x40x8mm with 4x M4 clearance \
-  holes (4.5mm) inset 6mm from corners, 3mm filleted vertical edges" \
+---
+
+## Quick start (CLI)
+
+```bash
+# from a technical drawing (JPEG/PNG) — opens the dimension digest for review first
+uv run cad-gen "bracket" --drawing exampledrawings/"WhatsApp Image 2026-06-13 at 18.10.05 (2).jpeg"
+
+# higher quality bar and bigger iteration budget
+uv run cad-gen "mounting bracket" \
+  --drawing path/to/drawing.jpeg \
   --threshold 9 --max-iterations 6
 ```
+
+The first positional argument is an optional text description that disambiguates the
+drawing; `--drawing` (repeatable for multi-sheet) is the authoritative input.
+
+### CLI options
 
 | option | default | meaning |
 |---|---|---|
@@ -54,122 +164,264 @@ uv run cad-gen "rectangular mounting bracket 60x40x8mm with 4x M4 clearance \
 | `--threshold, -t` | 8 | critic score (0–10) required to accept |
 | `--model, -m` | `google:gemini-3.5-flash` | generator model (`provider:name`) |
 | `--critic-model` | `google:gemini-3.5-flash` | vision critic model |
+| `--drawing` | – | path to a technical drawing (repeatable for multi-sheet) |
 | `--timeout` | 60 | sandbox seconds per execution attempt |
 | `--out, -o` | `runs/` | artifacts directory |
 
-`CAD_GEN_MODEL` / `CAD_GEN_CRITIC_MODEL` env vars (or `.env`) also work.
+`CAD_GEN_MODEL` / `CAD_GEN_CRITIC_MODEL` / `CAD_GEN_VIEW_MODEL` env vars (or `.env`) set
+the same defaults; the CLI flags override them.
 
-Exit codes: `0` accepted · `1` budget exhausted (best effort still written) ·
+**Exit codes:** `0` accepted · `1` budget exhausted (best effort still written) ·
 `2` configuration error.
 
-### Artifacts
+---
+
+## Web dashboard
+
+A Next.js dashboard drives the loop from the browser: type a spec (or drop a drawing),
+watch each iteration stream in live over SSE, **orbit the real generated geometry in 3D**,
+inspect the CadQuery code and critique, and browse run history. It talks to a thin FastAPI
+service that wraps `generate_cad`.
+
+Run both processes locally (needs `GEMINI_API_KEY` in `.env`):
+
+```bash
+# one-time: install the web extra + frontend deps
+uv sync --extra web
+cd web && pnpm install && cd ..
+
+# terminal 1 — backend (FastAPI + SSE) on :8000
+# --reload-dir scopes the watcher to source so runs writing to runs/ don't restart the server mid-run
+uv run --extra web uvicorn cad_gen.web.server:app --reload --reload-dir src/cad_gen
+
+# terminal 2 — frontend (Next.js) on :3000
+cd web && pnpm dev
+```
+
+Open <http://localhost:3000>.
+
+**Drawing workflow:** drop a JPEG/PNG on the form, review/edit the auto-extracted
+dimensions, optionally add a clarifying text note, then generate. When a run finishes, the
+result header includes an optional **fal.ai showcase** button (set `FAL_KEY` on the backend
+to enable) that turns the final render into a product-style image.
+
+### Web API surface (FastAPI)
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/runs` | start a run (multipart: drawings + optional spec text) |
+| `GET /api/runs/{id}/events` | SSE stream: `started → iteration* → result` |
+| `GET /api/runs` / `GET /api/runs/{id}` | run history / single run |
+| `POST /api/drawings/interpret` | run drawing interpretation alone (the human-review gate) |
+| artifact routes | serve run files read-only (absolute fs paths stripped) |
+
+---
+
+## Library API
+
+```python
+import asyncio
+from pathlib import Path
+from cad_gen import RunConfig, generate_cad
+from cad_gen.models import DrawingAttachment
+
+async def main():
+    drawing = DrawingAttachment(
+        data=Path("path/to/drawing.jpeg").read_bytes(),
+        media_type="image/jpeg",
+    )
+    result = await generate_cad(
+        "mounting bracket",  # optional clarifying note
+        RunConfig(max_iterations=6, score_threshold=8),
+        drawings=[drawing],
+    )
+    print(result.accepted, result.best.effective_score, result.run_dir)
+
+asyncio.run(main())
+```
+
+`generate_cad(spec, config, *, drawings=..., interpretation=..., on_iteration=...)`
+returns a `RunResult{accepted, best, iterations, run_dir, ...}`. Most collaborators
+(models, executor, renderer, reprojector, `on_iteration` callback) are injectable for
+testing.
+
+---
+
+## Configuration reference
+
+All configuration is via environment variables (or `.env`); see **`.env.example`** for the
+annotated source of truth. Summary:
+
+| Variable | Default | Applies to |
+|---|---|---|
+| `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) | – | **required** — generator, critic, view-locator |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | – | only if you point an agent at that provider |
+| `CAD_GEN_MODEL` | `google:gemini-3.5-flash` | generator model |
+| `CAD_GEN_CRITIC_MODEL` | `google:gemini-3.5-flash` | vision critic model |
+| `CAD_GEN_VIEW_MODEL` | (critic default) | drawing view-locator (vision) |
+| `CAD_GEN_REASONING_EFFORT` | provider default | generator thinking effort (`minimal…xhigh`) |
+| `CAD_GEN_CRITIC_REASONING_EFFORT` | provider default | critic thinking effort |
+| `CAD_GEN_WEB_ORIGINS` | `http://localhost:3000` | web CORS allow-list (comma-separated) |
+| `CAD_GEN_RUNS_DIR` | `runs` | artifacts root |
+| `FAL_KEY` | – | optional fal.ai showcase image |
+| `CAD_GEN_SHOWCASE_MODEL` | `fal-ai/flux-pro/kontext` | showcase image model |
+| `NEXT_PUBLIC_API_BASE_URL` *(frontend, `web/.env`)* | `http://localhost:8000` | backend URL the UI calls |
+
+Switching provider = change the `provider:` prefix and set the matching API key. Note: the
+CLI's key preflight only checks google/anthropic; other providers fail at call time if the
+key is missing.
+
+---
+
+## How it works
+
+The orchestrator runs an **outer self-refine loop** (quality) wrapping an **inner
+correctness loop** (the generator retries on tracebacks):
+
+1. **Run setup** — create `runs/<timestamp>/`, persist the drawing(s), config, and any
+   optional text note.
+2. **Interpret (once)** — interpret the drawing into a dimension digest + structured
+   constraints (deterministic bbox assertions), extract OpenCV line/circle primitives, and
+   a **VLM locates the front/top/side view boxes**.
+3. **Generate** — the generator agent writes CadQuery code and validates it by calling the
+   `execute_cad_code` tool (retrying on errors within the iteration).
+4. **Execute** — code runs in an isolated subprocess sandbox → STL, STEP, and
+   **ground-truth metrics from the OCCT kernel** (volume, bbox, COM, n_solids, n_faces,
+   watertight — never self-reported).
+5. **Render** — a headless NumPy z-buffer renderer produces a 4-view composite PNG.
+6. **Reproject** — the solid is reprojected into orthographic views
+   (OpenCASCADE hidden-line removal) and overlaid on the drawing's line work inside the
+   located boxes. A **deterministic, resolution-independent overlap score** judges it — a
+   VLM only *proposes* the boxes, so the check can only false-negative, never fake a pass.
+   It emits a colour-coded overlay (blue = missing, orange = extra, red = match).
+7. **Critique** — the vision critic receives the spec, measured metrics, code, the
+   reproject digest/verdict, and the images, returning a structured `Critique` with a 0–10
+   score. A **soft-cap** forbids a passing score when the reproject check failed unless the
+   overlay shows the flagged views are actually correct.
+8. **Accept or refine** — score ≥ threshold accepts; otherwise champion-anchored feedback
+   plus the overlay are carried into the next iteration. If the budget runs out, the
+   best-scoring iteration is returned (exit 1).
+
+The **reprojection signal** is the key correctness anchor for drawings — see
+[`src/cad_gen/reproject/README.md`](src/cad_gen/reproject/README.md) and
+[`src/cad_gen/reproject/DECISIONS.md`](src/cad_gen/reproject/DECISIONS.md) for the full
+design. The end-to-end I/O of every stage is documented in **[`pipeline.md`](pipeline.md)**
+(with a visual version in `pipeline_visualization.html`).
+
+---
+
+## Project structure
+
+```
+.
+├── src/cad_gen/
+│   ├── orchestrator.py        # the self-refine loop; generate_cad() entry point
+│   ├── cli.py                 # Typer CLI (cad-gen)
+│   ├── models.py              # Pydantic data models (RunConfig, RunResult, Critique, …)
+│   ├── imaging.py             # image helpers
+│   ├── drawing_constraints.py # structured dimension assertions from the digest
+│   ├── agents/                # PydanticAI agents
+│   │   ├── generator.py       #   writes CadQuery code (+ execute_cad_code tool)
+│   │   ├── critic.py          #   vision critic → Critique
+│   │   ├── drawing_parser.py  #   drawing → dimension digest
+│   │   └── prompts.py         #   system prompts
+│   ├── sandbox/               # subprocess execution of generated code
+│   │   ├── executor.py · harness.py · introspect.py
+│   ├── rendering/renderer.py  # headless NumPy z-buffer 4-view render
+│   ├── reproject/             # deterministic drawing-vs-solid geometric arbiter
+│   │   ├── check.py           #   self-contained scorer (OCP + OpenCV)
+│   │   ├── locator.py         #   VLM that proposes view boxes
+│   │   ├── adapter.py         #   runs check.py, builds LLM-facing overlays/digest
+│   │   ├── drawing_primitives.py · eval_drawings.py
+│   │   └── README.md · DECISIONS.md
+│   ├── eval/checks.py         # evaluation helpers
+│   └── web/                   # FastAPI backend (server.py, runs.py, schemas.py)
+├── web/                       # Next.js + React 19 frontend (3D viewer, live SSE)
+├── tests/                     # offline pytest suite (no API calls)
+├── exampledrawings/           # sample technical drawings
+├── runs/                      # generated run artifacts (gitignored output)
+├── pipeline.md                # full stage-by-stage I/O documentation
+├── Dockerfile                 # backend container image
+├── pyproject.toml · uv.lock   # deps & lockfile
+└── .env.example               # annotated configuration template
+```
+
+---
+
+## Output artifacts
 
 Every run writes `runs/<timestamp>/`:
 
 ```
 spec.txt  config.json  run_result.json  report.md
-iter_01/  attempt_01/{model.py,model.stl,model.step,metrics.json}
-          views.png  iteration.json
-iter_02/  ...
-final/    model.py  model.stl  model.step  views.png  critique.json
+input/drawing_NN.{png,jpg}              # persisted input drawings
+drawing_interpretation.md               # dimension digest
+drawing_constraints.json                # structured constraints
+view_layout_NN.json                     # located view boxes
+iter_NN/
+  attempt_MM/{model.py,model.stl,model.step,metrics.json}
+  views.png                             # render
+  reproject/{report.json,overlay_*.png} # drawing-vs-solid check
+  iteration.json
+final/  model.py  model.stl  model.step  views.png  critique.json
 ```
 
-### Library API
+---
 
-```python
-from cad_gen import RunConfig, generate_cad
-
-result = await generate_cad(
-    "a coffee mug, 80mm diameter, 100mm tall, 3mm wall, with handle",
-    RunConfig(max_iterations=6, score_threshold=8),
-)
-result.accepted, result.best.effective_score, result.run_dir
-```
-
-## How acceptance works
-
-The critic receives the spec, the **measured** geometry (volume, bounding box,
-solid count, watertightness from the OCCT kernel — not self-reported), the
-generated code, and a 4-view render. It returns a structured critique with a
-0–10 score; ≥ 8 (configurable) accepts. Failed executions score 0 and feed the
-traceback back to the generator. If the budget runs out, the best-scoring
-iteration is returned and the run exits 1.
-
-## Web view
-
-A Next.js dashboard (in `web/`) drives the loop from the browser: type a spec,
-watch each iteration stream in live over SSE, orbit the real generated geometry
-in 3D, and browse run history. It talks to a thin FastAPI service that wraps
-`generate_cad`.
-
-Run both processes locally (needs `GEMINI_API_KEY` in `.env`). The backend deps
-live in the optional `web` extra, so pass `--extra web` (plain `uv run uvicorn …`
-falls back to a global uvicorn that can't import the app):
-
-```bash
-# one-time: install the web extra (FastAPI, uvicorn, SSE, multipart)
-uv sync --extra web
-
-# terminal 1 — backend (FastAPI + SSE), serves on :8000
-# --reload-dir scopes the watcher to source: each run writes artifacts under
-# runs/, and watching those would reload the server mid-run and kill it.
-uv run --extra web uvicorn cad_gen.web.server:app --reload --reload-dir src/cad_gen
-
-# terminal 2 — frontend (Next.js), serves on :3000
-cd web && pnpm install && pnpm dev
-```
-
-(Or just drop `--reload` / `--reload-dir` and restart manually — the default
-watcher covers the whole repo, so it reloads whenever a run writes to `runs/`.)
-
-The web view also accepts a **technical drawing** (JPEG/PNG): drop it on the form,
-review/edit the auto-extracted dimensions, then generate. Drawing + text both work.
-When a run finishes, the result header includes an optional **fal showcase** button.
-Set `FAL_KEY` on the backend to enable it; clicking the button uploads the final
-`views.png` render to fal.ai and generates a single product-style image with
-`CAD_GEN_SHOWCASE_MODEL` (default `fal-ai/flux-pro/kontext`).
-
-Open <http://localhost:3000>. Backend env (all optional): `CAD_GEN_WEB_ORIGINS`
-(comma-separated CORS allow-list, default `http://localhost:3000`),
-`CAD_GEN_RUNS_DIR` (artifacts root, default `runs`), `FAL_KEY` and
-`CAD_GEN_SHOWCASE_MODEL` (optional fal.ai showcase generation). Frontend env:
-`NEXT_PUBLIC_API_BASE_URL` (default `http://localhost:8000`; see `web/.env.example`).
-
-**Deploying:** the frontend deploys to Vercel (set root directory to `web/` and
-`NEXT_PUBLIC_API_BASE_URL` to your backend URL). The backend can't run on Vercel
-(native OCCT, subprocess execution, persistent run artifacts) — build the
-included `Dockerfile` and host it on Fly.io / Render / a VM, setting
-`GEMINI_API_KEY` and `CAD_GEN_WEB_ORIGINS` (your Vercel domain).
-
-## Security note
-
-The subprocess sandbox provides **crash/timeout/state isolation, not a
-security boundary** — generated code runs with your user's privileges. The web
-backend makes this reachable over HTTP, so bind it to localhost in development
-and **never expose it publicly without container isolation and auth**.
-
-## Development
+## Testing & development
 
 ```bash
 uv run pytest        # offline: scripted models, no API calls (enforced)
-uv run ruff check .
+uv run ruff check .  # lint
 ```
 
-Tests use PydanticAI's `TestModel`/`FunctionModel` with
-`ALLOW_MODEL_REQUESTS=False`, so the whole loop is testable without a key.
+Tests use PydanticAI's `TestModel`/`FunctionModel` with `ALLOW_MODEL_REQUESTS=False`, so
+the entire loop — agents, sandbox, renderer, reprojection — is exercised without any API
+key or network access.
+
+---
+
+## Deployment
+
+- **Frontend → Vercel:** set the project root to `web/` and `NEXT_PUBLIC_API_BASE_URL` to
+  your backend URL.
+- **Backend → container:** the backend **can't** run on Vercel (native OCCT, subprocess
+  execution, persistent run artifacts). Build the included `Dockerfile` and host it on
+  Fly.io / Render / a VM:
+
+  ```bash
+  docker build -t cad-gen-api .
+  docker run -p 8000:8000 -e GEMINI_API_KEY=... \
+    -e CAD_GEN_WEB_ORIGINS=https://your-app.vercel.app \
+    -v cadgen-runs:/data/runs cad-gen-api
+  ```
+
+---
+
+## Security notes
+
+- The subprocess sandbox provides **crash/timeout/state isolation, not a security
+  boundary** — generated code runs with your user's privileges. The web backend makes this
+  reachable over HTTP, so bind it to localhost in development and **never expose it
+  publicly without container isolation and auth**.
+- **Never commit real secrets.** `.env` is gitignored; only `.env.example` (no secrets)
+  belongs in version control. If a key has ever been committed or shared, rotate it.
+
+---
 
 ## Known limitations
 
-Simple prismatic parts (plates, brackets, blocks, holes, fillets) converge
-reliably. Parts needing a swept feature *fused* to a body — e.g. a mug handle —
-are at the edge of current model capability: the model often leaves the feature
-as a separate, unfused solid, which the critic correctly rejects via the
-ground-truth `n_solids` check, so the run returns its best effort rather than a
-wrong "accepted". Refining from the best-so-far iteration keeps these hard cases
-from diverging, but does not guarantee they solve within the budget.
+Simple prismatic parts (plates, brackets, blocks, holes, fillets) converge reliably. Parts
+needing a swept feature *fused* to a body — e.g. a mug handle — are at the edge of current
+model capability: the model often leaves the feature as a separate, unfused solid, which
+the critic correctly rejects via the ground-truth `n_solids` check, so the run returns its
+best effort rather than a wrong "accepted". Refining from the best-so-far iteration keeps
+these hard cases from diverging but does not guarantee they solve within the budget.
+
+---
 
 ## Future work
 
 pyrender/OSMesa renderer (true hidden-surface removal); multi-part assemblies;
-dimension-assertion validator parsed from the spec; auth + persistent run store
-for a hosted web deployment.
+topology-specific dimension-assertion validators beyond the bbox check; auth + persistent
+run store for a hosted web deployment.
