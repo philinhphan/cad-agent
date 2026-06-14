@@ -18,14 +18,20 @@ from cad_gen.agents.generator import (
     IterationWorkspace,
     build_generator_agent,
 )
+from cad_gen.drawing_constraints import derive_drawing_constraints, validate_drawing_constraints
 from cad_gen.imaging import drawing_filename
-from cad_gen.models import DrawingAttachment, IterationRecord, RunConfig, RunResult
+from cad_gen.models import DrawingAttachment, DrawingConstraints, IterationRecord, RunConfig, RunResult
 from cad_gen.rendering.renderer import render_views
 from cad_gen.reproject import (
     ReprojectorFn,
     build_view_locator_agent,
+    combine_reprojection_reports,
     locate_drawing_views,
     reproject_report,
+)
+from cad_gen.reproject.drawing_primitives import (
+    extract_drawing_primitives,
+    primitive_prompt_summary,
 )
 from cad_gen.sandbox.executor import run_cad_code
 
@@ -67,14 +73,19 @@ async def generate_cad(
         interpretation = await interpret_drawing(interpreter, spec=spec, drawings=drawings)
     if interpretation is not None:
         (run_dir / "drawing_interpretation.md").write_text(interpretation)
+    constraints = _derive_and_persist_constraints(run_dir, interpretation)
+    primitive_digests = _extract_and_persist_primitives(run_dir, drawing_names)
 
-    # Locate the drawing's orthographic views ONCE (advisory; drives the per-iteration
+    # Locate each drawing's orthographic views ONCE (advisory; drives the per-iteration
     # reprojection check). A VLM proposes the boxes; the deterministic overlap judges.
-    view_regions: dict[str, list[float]] | None = None
+    view_regions_by_drawing: list[dict[str, list[float]] | None] = []
     if drawings and config.reproject:
-        view_regions = await _locate_views(
-            view_locator_model or config.view_model, drawings[0], run_dir
-        )
+        for i, drawing in enumerate(drawings, start=1):
+            view_regions_by_drawing.append(
+                await _locate_views(
+                    view_locator_model or config.view_model, drawing, run_dir, index=i
+                )
+            )
 
     generator = build_generator_agent(
         generator_model or config.model, reasoning_effort=config.reasoning_effort
@@ -98,7 +109,15 @@ async def generate_cad(
             executor=executor,
         )
 
-        prompt = _build_prompt(spec, feedback, interpretation, drawings, composite_bytes)
+        prompt = _build_prompt(
+            spec,
+            feedback,
+            interpretation,
+            drawings,
+            composite_bytes,
+            constraints=constraints,
+            primitive_digests=primitive_digests,
+        )
         gen_result = await generator.run(prompt, deps=workspace)
 
         execution = workspace.last_success or (
@@ -109,6 +128,9 @@ async def generate_cad(
         )
 
         if execution is not None and execution.success:
+            record.constraint_validation = validate_drawing_constraints(
+                execution.metrics, constraints
+            )
             record.render_path = renderer(
                 execution.stl_path, iter_dir / "views.png", execution.metrics
             )
@@ -116,13 +138,29 @@ async def generate_cad(
             # the critic so its digest can ground the critique; isolated in a subprocess
             # and degrades to evaluated=False, so it can never block the critic.
             if config.reproject and drawings and execution.step_path is not None:
-                record.reprojection = reprojector(
-                    execution.step_path,
-                    run_dir / "input" / drawing_names[0],  # reproject expects one ortho sheet
-                    iter_dir / "reproject",
-                    config,
-                    regions=view_regions,
-                    timeout_s=config.reproject_timeout_s,
+                reports = []
+                for i, name in enumerate(drawing_names, start=1):
+                    out_dir = (
+                        iter_dir / "reproject"
+                        if len(drawing_names) == 1
+                        else iter_dir / "reproject" / f"drawing_{i:02d}"
+                    )
+                    report = reprojector(
+                        execution.step_path,
+                        run_dir / "input" / name,
+                        out_dir,
+                        config,
+                        regions=(
+                            view_regions_by_drawing[i - 1]
+                            if i - 1 < len(view_regions_by_drawing)
+                            else None
+                        ),
+                        timeout_s=config.reproject_timeout_s,
+                    )
+                    report.source_drawing = name
+                    reports.append(report)
+                record.reprojection = combine_reprojection_reports(
+                    reports, iter_dir / "reproject"
                 )
             record.critique = await run_critique(
                 critic,
@@ -131,6 +169,8 @@ async def generate_cad(
                 render_path=record.render_path,
                 drawings=drawings,
                 reprojection=record.reprojection,
+                constraints=constraints,
+                constraint_validation=record.constraint_validation,
             )
 
         (iter_dir / "iteration.json").write_text(record.model_dump_json(indent=2))
@@ -151,6 +191,7 @@ async def generate_cad(
         spec=spec,
         drawings=drawing_names,
         interpretation=interpretation,
+        constraints=constraints,
         best=best,
         iterations=iterations,
         run_dir=run_dir,
@@ -191,8 +232,36 @@ def _persist_drawings(run_dir: Path, drawings: list[DrawingAttachment]) -> list[
     return names
 
 
+def _derive_and_persist_constraints(
+    run_dir: Path, interpretation: str | None
+) -> DrawingConstraints | None:
+    if not interpretation:
+        return None
+    constraints = derive_drawing_constraints(interpretation)
+    (run_dir / "drawing_constraints.json").write_text(
+        constraints.model_dump_json(indent=2)
+    )
+    return constraints
+
+
+def _extract_and_persist_primitives(run_dir: Path, drawing_names: list[str]) -> list[str]:
+    digests: list[str] = []
+    for i, name in enumerate(drawing_names, start=1):
+        path = run_dir / "input" / name
+        try:
+            primitives = extract_drawing_primitives(path)
+        except Exception as exc:
+            digests.append(f"{name}: primitive extraction skipped ({type(exc).__name__}: {exc})")
+            continue
+        (run_dir / f"drawing_primitives_{i:02d}.json").write_text(
+            primitives.model_dump_json(indent=2)
+        )
+        digests.append(primitive_prompt_summary(name, primitives))
+    return digests
+
+
 async def _locate_views(
-    model: str | Model, drawing: DrawingAttachment, run_dir: Path
+    model: str | Model, drawing: DrawingAttachment, run_dir: Path, *, index: int = 1
 ) -> dict[str, list[float]] | None:
     """VLM-locate the drawing's orthographic views; persist + return normalized regions.
 
@@ -205,7 +274,10 @@ async def _locate_views(
         layout = await locate_drawing_views(agent, drawing=drawing)
     except Exception:
         return None
-    (run_dir / "view_layout.json").write_text(layout.model_dump_json(indent=2))
+    payload = layout.model_dump_json(indent=2)
+    (run_dir / f"view_layout_{index:02d}.json").write_text(payload)
+    if index == 1:
+        (run_dir / "view_layout.json").write_text(payload)
     if not layout.views:
         return None
     return {v.label: [v.x, v.y, v.w, v.h] for v in layout.views}
@@ -217,6 +289,9 @@ def _build_prompt(
     interpretation: str | None,
     drawings: list[DrawingAttachment],
     reproject_composite: bytes | None = None,
+    *,
+    constraints: DrawingConstraints | None = None,
+    primitive_digests: list[str] | None = None,
 ) -> str | list:
     """Generator prompt. Plain str for text-only runs (byte-identical to before);
     a [text, *images] list when drawings are present so the model re-reads the
@@ -230,6 +305,15 @@ def _build_prompt(
             "the drawing image is authoritative; if anything here conflicts with the "
             f"image, trust the image):\n{interpretation}"
         )
+    if constraints is not None:
+        text += (
+            "\n\n## Structured drawing constraints (machine-readable, derived from the "
+            "dimension digest; use as a checklist, but resolve conflicts against the image):\n"
+            f"{constraints.model_dump_json(indent=2)}"
+        )
+    if primitive_digests:
+        text += "\n\n## Deterministic drawing primitive extraction:\n"
+        text += "\n".join(f"- {d}" for d in primitive_digests)
     if not drawings:
         return text
     if reproject_composite is not None:

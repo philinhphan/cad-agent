@@ -2,7 +2,7 @@
 # The frontend (web/) deploys separately to Vercel; this image hosts the API.
 #
 #   docker build -t cad-gen-api .
-#   docker run -p 8000:8000 -e OPENAI_API_KEY=sk-... \
+#   docker run -p 8000:8000 -e GEMINI_API_KEY=... \
 #     -e CAD_GEN_WEB_ORIGINS=https://your-app.vercel.app \
 #     -v cadgen-runs:/data/runs cad-gen-api
 FROM python:3.12-slim

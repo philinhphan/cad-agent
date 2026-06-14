@@ -2,8 +2,9 @@
 .env
 
 # Generated run artifacts
-runs/
+/runs/
 out_reproj_check/        # reproject drawing-eval output (cad_gen.reproject.eval_drawings)
+codex_improvement_plan.md
 
 # Python
 __pycache__/

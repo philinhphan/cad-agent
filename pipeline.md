@@ -11,13 +11,15 @@ Agentic text/drawing → CAD via a self-refine loop. Entry point:
    ── run setup ─────────  run_dir/  spec.txt · config.json · input/drawing_NN.*
                                                    │
    ── once, drawing mode ─ ① interpret drawing  → drawing_interpretation.md  (dimension digest)
-                           ② locate views (VLM)  → view_layout.json          (front/top/side boxes)
+                           ①b structure/check   → drawing_constraints.json   (dimension assertions)
+                           ①c CV primitives     → drawing_primitives_NN.json (lines/circles/text regions)
+                           ② locate views (VLM) → view_layout_NN.json        (front/top/side boxes)
                                                    │
    ┌───────────────────────────── self-refine loop (≤ max_iterations) ───────────────────────────┐
    │  ③ build prompt  =  spec + feedback + interpretation + drawing img(s) + champion overlay img  │
    │  ④ GENERATOR (LLM) ──writes CadQuery──▶ ⑤ SANDBOX exec (subprocess) ──▶ STL · STEP · metrics  │
    │  ⑥ RENDER (z-buffer) ──▶ views.png (iso/front/top/right)                                       │
-   │  ⑦ REPROJECT (drawing mode, subprocess) ──▶ report.json · overlays · composite · digest       │
+   │  ⑦ REPROJECT each drawing (subprocess) ─▶ report.json · overlays · mismatch clusters · digest  │
    │  ⑧ CRITIC (vision LLM) = spec + metrics + code + reproject digest/verdict + [render,drawings,  │
    │                          overlay] ──▶ Critique{score 0-10, matches_spec, issues, suggestions}  │
    │  ⑨ score ≥ threshold? ── yes ▶ break ── no ▶ feedback(champion) + champion overlay ▶ next iter │
@@ -34,13 +36,15 @@ Agentic text/drawing → CAD via a self-refine loop. Entry point:
 |---|-------|------|-------|--------|
 | 0 | Run setup | `generate_cad`, `_new_run_dir`, `_persist_drawings` | spec, drawings, `RunConfig` | `run_dir/` + `spec.txt`, `config.json`, `input/drawing_NN.{png,jpg}` |
 | ① | Drawing interpret (once, drawing mode) | `agents/drawing_parser.py` (`interpret_drawing`, model `config.model`) | drawing image(s) + spec | Markdown dimension digest → `drawing_interpretation.md`. Skipped if caller passed `interpretation` (CLI/web human-review gate). |
-| ② | View localization (once, drawing+reproject) | `reproject/locator.py` (`locate_drawing_views`, **VLM** `config.view_model`) | first drawing image | `ViewLayout` = normalized front/top/side boxes → `view_layout.json` → `view_regions` dict. Failure → `None` (reproject withholds). |
+| ①b | Structured constraints | `drawing_constraints.py` (`derive_drawing_constraints`, `validate_drawing_constraints`) | dimension digest + later kernel metrics | `drawing_constraints.json` + per-iteration `ConstraintValidation` digest. Bbox is checked deterministically; feature callouts are tracked as unverified until topology-specific validators exist. |
+| ①c | Drawing primitive extraction | `reproject/drawing_primitives.py` (`extract_drawing_primitives`, `primitive_prompt_summary`) | each persisted drawing image | `drawing_primitives_NN.json` plus generator prompt hints: top line/circle/arc/centerline/arrow/text-region candidates with normalized coordinates, radius/endpoint hints, and nearest text-region links. |
+| ② | View localization (once per drawing+reproject) | `reproject/locator.py` (`locate_drawing_views`, **VLM** `config.view_model`) | each drawing image | `ViewLayout` = normalized front/top/side boxes → `view_layout_NN.json` (plus `view_layout.json` alias for the first sheet) → `view_regions` dict. Failure → `None` (that sheet's reproject withholds). |
 | ③ | Build prompt | `orchestrator._build_prompt` | spec, `feedback` (champion), `interpretation`, drawings, champion overlay bytes | `str` (text-only) **or** `[text, overlay_img?, *drawing_imgs]` |
 | ④ | Generator | `agents/generator.py` (`build_generator_agent`, `config.model`, `config.reasoning_effort`) | prompt | CadQuery code; validated by calling the `execute_cad_code` tool (≤ `max_exec_attempts_per_iteration`) |
 | ⑤ | Sandbox execution | `sandbox/executor.py` + `sandbox/harness.py` (subprocess) | CadQuery code | `ExecutionResult{success, code, metrics, stl_path, step_path, error}`; writes `attempt_NN/{model.py, model.stl, model.step, metrics.json}`. Metrics = volume, bbox, COM, n_solids, n_faces, watertight. |
 | ⑥ | Render | `rendering/renderer.py` (`render_views`, numpy z-buffer) | STL + metrics | `iter_NN/views.png` (2×2 iso/front/top/right, mm axes) |
-| ⑦ | Reproject check (drawing mode, **before** critic) | `reproject/adapter.py` (`reproject_report`) → subprocess `reproject/check.py` | STEP + drawing + `view_regions` | `iter_NN/reproject/{report.json, overlay_{front,top,side}.png, overlay_composite.png, regions.json}` + `ReprojectionReport`. See sub-pipeline below. |
-| ⑧ | Critic | `agents/critic.py` (`run_critique`, **vision LLM** `config.critic_model`) | spec + metrics + code + reproject digest/verdict + images `[render, *drawings, overlay_composite]` | `Critique{matches_spec, score 0-10, issues, suggestions, summary}` |
+| ⑦ | Reproject check (drawing mode, **before** critic) | `reproject/adapter.py` (`reproject_report`, `combine_reprojection_reports`) → subprocess `reproject/check.py` | STEP + every drawing + each drawing's `view_regions` | Per drawing: `report.json`, overlays, structured mismatch clusters. Multi-sheet runs aggregate into one `ReprojectionReport{children=[...]}` and optional composite. See sub-pipeline below. |
+| ⑧ | Critic | `agents/critic.py` (`run_critique`, **vision LLM** `config.critic_model`) | spec + metrics + code + structured constraints + constraint validation + reproject digest/verdict + images `[render, *drawings, overlay_composite]` | `Critique{matches_spec, score 0-10, issues, suggestions, summary}` |
 | — | Persist iteration | `orchestrator` | record | `iter_NN/iteration.json`; fires `on_iteration` callback (web SSE) |
 | ⑨ | Accept / refine | `orchestrator`, `_build_feedback` | `effective_score` (= critic score) | `≥ score_threshold` → break; else champion-anchored `feedback` + champion `overlay_composite` bytes carried to next ③ |
 | ⑩ | Finalize | `_persist_final`, `_write_report` | all iterations | `final/{model.py, model.stl, model.step, views.png, critique.json}`, `report.md`, `run_result.json`; returns `RunResult` |
@@ -60,11 +64,13 @@ reproject_report(step, drawing, out_dir, config, regions)         [adapter.py, i
           snap each region to its ink (_tighten_box)   ·  fit reprojection by bbox, score
           ▶ report.json {per-view coverage, chamfer_pct, aspect} + overlay_{view}.png
         adapter post-processes report.json →
+          ▶ structured mismatch clusters from overlay blue/orange connected components
           ▶ overlay_composite.png  (labelled front|top|side, blue=missing/orange=extra/red=match)
           ▶ digest (per-view coverage verbalised) + interpretation line
           ▶ ReprojectionReport{evaluated, passed, views, digest, composite_path, …}
   withheld (evaluated=False) when: subprocess error/timeout · no views located ·
                                    all views low coverage AND aspects still match (≈ orientation)
+  multiple input drawings ─────────▶ combine_reprojection_reports(children=[per-sheet reports])
 ```
 
 **Routing of the reproject outputs:**
@@ -101,11 +107,15 @@ runs/<timestamp>/
 ├── spec.txt · config.json
 ├── input/drawing_NN.{png,jpg}            # persisted input drawings (drawing mode)
 ├── drawing_interpretation.md             # ① dimension digest
-├── view_layout.json                      # ② VLM view boxes
+├── drawing_constraints.json              # ①b structured constraints
+├── drawing_primitives_NN.json            # ①c OpenCV primitive candidates per drawing
+├── view_layout.json                      # ② compatibility alias for first drawing's VLM boxes
+├── view_layout_NN.json                   # ② VLM view boxes per drawing
 ├── iter_NN/
 │   ├── attempt_MM/{model.py, model.stl, model.step, metrics.json}   # ⑤ each exec attempt
 │   ├── views.png                         # ⑥ render
-│   ├── reproject/{report.json, overlay_{front,top,side}.png, overlay_composite.png, regions.json}  # ⑦
+│   ├── reproject/{report.json, overlay_{front,top,side}.png, overlay_composite.png, regions.json}  # ⑦ single drawing
+│   ├── reproject/drawing_NN/{report.json, overlay_*.png, regions.json}  # ⑦ multi drawing
 │   └── iteration.json                    # IterationRecord (execution, critique, reprojection)
 ├── final/{model.py, model.stl, model.step, views.png, critique.json}   # ⑩ best iteration
 ├── report.md                             # human-readable summary table

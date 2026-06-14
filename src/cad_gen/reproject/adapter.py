@@ -20,7 +20,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from cad_gen.models import ReprojectionReport, ReprojectionView, RunConfig
+from cad_gen.models import ReprojectionMismatch, ReprojectionReport, ReprojectionView, RunConfig
 
 ReprojectorFn = Callable[..., ReprojectionReport]
 
@@ -131,13 +131,15 @@ def _build_from_report(report: dict, out_dir: Path, config: RunConfig) -> Reproj
         step_a = float(v.get("step_aspect", 0.0))
         rel = float(v.get("aspect_rel_err", 0.0))
         overlay = v.get("overlay")
+        overlay_path = (out_dir / overlay) if overlay else None
         views[name] = ReprojectionView(
             coverage=float(v["coverage"]),
             chamfer_pct=float(v.get("chamfer_pct", 0.0)),
             aspect_ok=bool(v.get("aspect_ok", True)),
             aspect_rel_err=rel,
             aspect_signed=rel if step_a > draw_a else -rel,  # + => part too wide
-            overlay_path=(out_dir / overlay) if overlay else None,
+            overlay_path=overlay_path,
+            mismatches=_mismatches_from_overlay(name, overlay_path),
         )
 
     digest, interpretation = _build_digest(views, config)
@@ -150,6 +152,49 @@ def _build_from_report(report: dict, out_dir: Path, config: RunConfig) -> Reproj
         digest=digest,
         interpretation=interpretation,
         composite_path=_safe_composite(views, out_dir / "overlay_composite.png"),
+    )
+
+
+def combine_reprojection_reports(
+    reports: list[ReprojectionReport], out_dir: Path
+) -> ReprojectionReport | None:
+    """Aggregate per-drawing reports into one LLM-facing report.
+
+    Existing single-drawing behavior is preserved by returning the child report unchanged
+    when there is only one input.
+    """
+    if not reports:
+        return None
+    if len(reports) == 1:
+        return reports[0]
+
+    evaluated = [r for r in reports if r.evaluated]
+    if not evaluated:
+        reasons = "; ".join(r.skipped_reason or "not evaluated" for r in reports)
+        return _not_evaluated(f"all drawing reprojections withheld: {reasons}")
+
+    digest_parts = []
+    for idx, report in enumerate(reports, start=1):
+        label = report.source_drawing or f"drawing_{idx:02d}"
+        if report.evaluated:
+            verdict = "PASSED" if report.passed else "DID NOT PASS"
+            digest_parts.append(f"Drawing {label} — {verdict}\n{report.digest}")
+        else:
+            digest_parts.append(
+                f"Drawing {label} — not evaluated: {report.skipped_reason or 'unknown reason'}"
+            )
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return ReprojectionReport(
+        evaluated=True,
+        passed=len(evaluated) == len(reports) and all(r.passed for r in evaluated),
+        views_found=sum(r.views_found for r in evaluated),
+        mean_chamfer_pct=_mean([r.mean_chamfer_pct for r in evaluated]),
+        source_drawing="multiple",
+        children=reports,
+        digest="\n\n".join(digest_parts),
+        interpretation=_aggregate_interpretation(evaluated),
+        composite_path=_safe_report_composite(evaluated, out_dir / "overlay_composite.png"),
     )
 
 
@@ -179,6 +224,8 @@ def _build_digest(views: dict[str, ReprojectionView], config: RunConfig) -> tupl
             apct = round(v.aspect_rel_err * 100)
             side = "wide for its height" if v.aspect_signed > 0 else "tall for its width"
             lines.append(f"  - proportions are off: the part is ~{apct}% too {side} here.")
+        if v.mismatches:
+            lines.append(f"  - largest {name} mismatches: {_mismatch_summary(v.mismatches)}")
 
     interpretation = _interpretation(views, config)
     digest = "\n".join(lines) + "\n\n" + interpretation + "\n\n" + _ADVISORY
@@ -281,3 +328,120 @@ def _load_emphasized(path: Path):
         mask = cv2.dilate(cv2.inRange(img, arr, arr), kernel)
         out[mask > 0] = color
     return cv2.cvtColor(out, cv2.COLOR_BGR2RGB)
+
+
+def _mismatches_from_overlay(view: str, path: Path | None) -> list[ReprojectionMismatch]:
+    """Turn exact blue/orange overlay pixels into connected mismatch clusters."""
+    if path is None or not Path(path).exists():
+        return []
+    import cv2
+    import numpy as np
+
+    img = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    if img is None:
+        return []
+    H, W = img.shape[:2]
+    specs = [
+        ("missing_drawing_line", np.array((255, 90, 0), dtype=np.uint8)),
+        ("extra_model_line", np.array((0, 140, 255), dtype=np.uint8)),
+    ]
+    clusters: list[ReprojectionMismatch] = []
+    min_area = max(6, int(0.0002 * H * W))
+    for kind, color in specs:
+        mask = cv2.inRange(img, color, color)
+        n, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        for i in range(1, n):
+            x, y, w, h, area = stats[i]
+            if area < min_area:
+                continue
+            cx, cy = centroids[i]
+            clusters.append(
+                ReprojectionMismatch(
+                    kind=kind,
+                    view=view,
+                    bbox_norm=_norm_box(int(x), int(y), int(w), int(h), W, H),
+                    centroid_norm=(round(float(cx) / W, 4), round(float(cy) / H, 4)),
+                    area_px=int(area),
+                    area_frac=round(float(area) / float(H * W), 5),
+                    location=_location(float(cx) / W, float(cy) / H),
+                )
+            )
+    return sorted(clusters, key=lambda c: c.area_px, reverse=True)[:8]
+
+
+def _norm_box(x: int, y: int, w: int, h: int, W: int, H: int) -> tuple[float, float, float, float]:
+    return (
+        round(x / W, 4),
+        round(y / H, 4),
+        round(w / W, 4),
+        round(h / H, 4),
+    )
+
+
+def _location(nx: float, ny: float) -> str:
+    col = "left" if nx < 0.33 else "right" if nx > 0.67 else "center"
+    row = "upper" if ny < 0.33 else "lower" if ny > 0.67 else "middle"
+    return f"{row}-{col}"
+
+
+def _mismatch_summary(mismatches: list[ReprojectionMismatch]) -> str:
+    parts = []
+    for m in mismatches[:4]:
+        kind = m.kind.replace("_", " ")
+        x, y, w, h = m.bbox_norm
+        parts.append(
+            f"{kind} at {m.location} bbox=({x:.2f},{y:.2f},{w:.2f},{h:.2f})"
+        )
+    return "; ".join(parts)
+
+
+def _mean(values: list[float | None]) -> float | None:
+    nums = [float(v) for v in values if v is not None]
+    return round(sum(nums) / len(nums), 3) if nums else None
+
+
+def _aggregate_interpretation(reports: list[ReprojectionReport]) -> str:
+    failures = [r for r in reports if not r.passed]
+    if not failures:
+        return "All evaluated drawing sheets match the generated geometry."
+    labels = ", ".join(r.source_drawing or "drawing" for r in failures)
+    return f"Reprojection mismatches remain in: {labels}."
+
+
+def _safe_report_composite(reports: list[ReprojectionReport], out_png: Path) -> Path | None:
+    try:
+        return _build_report_composite(reports, out_png)
+    except Exception:
+        return None
+
+
+def _build_report_composite(reports: list[ReprojectionReport], out_png: Path) -> Path | None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import cv2
+    import matplotlib.pyplot as plt
+
+    images = []
+    for idx, report in enumerate(reports, start=1):
+        if report.composite_path is None:
+            continue
+        img = cv2.imread(str(report.composite_path), cv2.IMREAD_COLOR)
+        if img is None:
+            continue
+        label = report.source_drawing or f"drawing_{idx:02d}"
+        images.append((label, cv2.cvtColor(img, cv2.COLOR_BGR2RGB)))
+    if not images:
+        return None
+    fig, axes = plt.subplots(1, len(images), figsize=(6 * len(images), 5), squeeze=False)
+    for ax, (label, img) in zip(axes[0], images):
+        ax.imshow(img, interpolation="nearest")
+        ax.set_title(label)
+        ax.set_xticks([])
+        ax.set_yticks([])
+    fig.suptitle("Reprojection overlays across all supplied drawing sheets")
+    fig.tight_layout()
+    out_png = Path(out_png)
+    fig.savefig(out_png, dpi=100)
+    plt.close(fig)
+    return out_png

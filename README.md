@@ -8,7 +8,7 @@ inspected by a vision-model critic** that scores it against the spec, and the
 code is refined iteratively until the quality threshold is met.
 
 Built on [PydanticAI](https://ai.pydantic.dev/), so it is LLM-agnostic: any
-supported provider works by changing one model string (OpenAI by default).
+supported provider works by changing one model string (Gemini by default).
 
 ```
 spec ─► ORCHESTRATOR (outer loop: quality)
@@ -31,12 +31,12 @@ spec ─► ORCHESTRATOR (outer loop: quality)
 
 ```bash
 uv sync
-cp .env.example .env   # paste your OPENAI_API_KEY (generator) + GEMINI_API_KEY (critic)
+cp .env.example .env   # paste your GEMINI_API_KEY
 ```
 
-By default the generator runs on `openai:gpt-5.5` and the vision critic on
-`google:gemini-3.5-flash`, so both an OpenAI and a Google (Gemini) key are needed
-unless you point `--model`/`--critic-model` at a single provider.
+By default the generator, vision critic, and drawing view-locator all run on
+`google:gemini-3.5-flash`, so one Google/Gemini key is enough unless you point
+`--model`/`--critic-model`/`CAD_GEN_VIEW_MODEL` at another provider.
 
 ## Usage
 
@@ -52,7 +52,7 @@ uv run cad-gen "rectangular mounting bracket 60x40x8mm with 4x M4 clearance \
 |---|---|---|
 | `--max-iterations, -n` | 5 | outer self-refine iteration budget |
 | `--threshold, -t` | 8 | critic score (0–10) required to accept |
-| `--model, -m` | `openai:gpt-5.5` | generator model (`provider:name`) |
+| `--model, -m` | `google:gemini-3.5-flash` | generator model (`provider:name`) |
 | `--critic-model` | `google:gemini-3.5-flash` | vision critic model |
 | `--timeout` | 60 | sandbox seconds per execution attempt |
 | `--out, -o` | `runs/` | artifacts directory |
@@ -102,7 +102,7 @@ watch each iteration stream in live over SSE, orbit the real generated geometry
 in 3D, and browse run history. It talks to a thin FastAPI service that wraps
 `generate_cad`.
 
-Run both processes locally (needs `OPENAI_API_KEY` in `.env`). The backend deps
+Run both processes locally (needs `GEMINI_API_KEY` in `.env`). The backend deps
 live in the optional `web` extra, so pass `--extra web` (plain `uv run uvicorn …`
 falls back to a global uvicorn that can't import the app):
 
@@ -124,17 +124,22 @@ watcher covers the whole repo, so it reloads whenever a run writes to `runs/`.)
 
 The web view also accepts a **technical drawing** (JPEG/PNG): drop it on the form,
 review/edit the auto-extracted dimensions, then generate. Drawing + text both work.
+When a run finishes, the result header includes an optional **fal showcase** button.
+Set `FAL_KEY` on the backend to enable it; clicking the button uploads the final
+`views.png` render to fal.ai and generates a single product-style image with
+`CAD_GEN_SHOWCASE_MODEL` (default `fal-ai/flux-pro/kontext`).
 
 Open <http://localhost:3000>. Backend env (all optional): `CAD_GEN_WEB_ORIGINS`
 (comma-separated CORS allow-list, default `http://localhost:3000`),
-`CAD_GEN_RUNS_DIR` (artifacts root, default `runs`). Frontend env:
+`CAD_GEN_RUNS_DIR` (artifacts root, default `runs`), `FAL_KEY` and
+`CAD_GEN_SHOWCASE_MODEL` (optional fal.ai showcase generation). Frontend env:
 `NEXT_PUBLIC_API_BASE_URL` (default `http://localhost:8000`; see `web/.env.example`).
 
 **Deploying:** the frontend deploys to Vercel (set root directory to `web/` and
 `NEXT_PUBLIC_API_BASE_URL` to your backend URL). The backend can't run on Vercel
 (native OCCT, subprocess execution, persistent run artifacts) — build the
 included `Dockerfile` and host it on Fly.io / Render / a VM, setting
-`OPENAI_API_KEY` and `CAD_GEN_WEB_ORIGINS` (your Vercel domain).
+`GEMINI_API_KEY` and `CAD_GEN_WEB_ORIGINS` (your Vercel domain).
 
 ## Security note
 

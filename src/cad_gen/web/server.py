@@ -1,7 +1,7 @@
 """FastAPI application factory for the cad-gen web backend.
 
 Wraps the existing async ``generate_cad`` loop and streams each self-refine
-iteration to the browser over SSE. The OpenAI key stays server-side.
+iteration to the browser over SSE. Provider API keys stay server-side.
 
 Security note: this server executes LLM-generated CadQuery in a subprocess —
 crash/timeout isolation only, NOT a security sandbox (same caveat as the CLI,
@@ -22,7 +22,7 @@ from cad_gen.agents.drawing_parser import build_drawing_parser_agent, interpret_
 from cad_gen.imaging import ALLOWED_MEDIA_TYPES, MAX_DRAWING_BYTES, MAX_DRAWINGS, media_type_for
 from cad_gen.models import DrawingAttachment, RunConfig
 from cad_gen.web import runs as runs_mod
-from cad_gen.web.schemas import StartRunResponse
+from cad_gen.web.schemas import ShowcaseResponse, StartRunResponse
 
 DEFAULT_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
@@ -141,6 +141,14 @@ def create_app(
     @app.get("/api/runs/{run_id}")
     def get_run(run_id: str) -> dict:
         return runs_mod.run_detail(run_id, app.state.runs_dir)
+
+    @app.get("/api/runs/{run_id}/showcase", response_model=ShowcaseResponse)
+    def get_showcase(run_id: str) -> dict:
+        return runs_mod.showcase_detail(run_id, app.state.runs_dir)
+
+    @app.post("/api/runs/{run_id}/showcase", response_model=ShowcaseResponse)
+    async def create_showcase(run_id: str) -> dict:
+        return await runs_mod.generate_showcase(run_id, app.state.runs_dir)
 
     @app.get("/api/runs/{run_id}/events")
     async def run_events(run_id: str, request: Request) -> EventSourceResponse:

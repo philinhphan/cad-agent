@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { subscribeRun } from "./api";
+import { getRun, subscribeRun } from "./api";
 import type { IterationPayload, RunConfig, RunEvent } from "./types";
 
 export type RunStatus = "connecting" | "running" | "done" | "error";
@@ -72,18 +72,42 @@ export function useRunStream(runId: string): RunStreamState {
   const [state, setState] = useState<RunStreamState>(INITIAL);
 
   useEffect(() => {
-    setState(INITIAL);
+    let cancelled = false;
     const unsubscribe = subscribeRun(
       runId,
-      (event) => setState((prev) => reduce(prev, event)),
-      () =>
-        setState((prev) =>
-          prev.status === "done"
-            ? prev
-            : { ...prev, status: "error", error: "connection to backend lost" },
-        ),
+      (event) => {
+        if (!cancelled) setState((prev) => reduce(prev, event));
+      },
+      () => {
+        void getRun(runId)
+          .then((detail) => {
+            if (cancelled) return;
+            setState(
+              staticRunState(
+                detail.iterations,
+                detail.accepted,
+                detail.best_index,
+                detail.spec,
+                detail.id,
+                detail.drawings ?? [],
+                detail.interpretation ?? null,
+              ),
+            );
+          })
+          .catch(() => {
+            if (cancelled) return;
+            setState((prev) =>
+              prev.status === "done"
+                ? prev
+                : { ...prev, status: "error", error: "connection to backend lost" },
+            );
+          });
+      },
     );
-    return unsubscribe;
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
   }, [runId]);
 
   return state;

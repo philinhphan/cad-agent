@@ -5,6 +5,7 @@ import type {
   RunDetail,
   RunEvent,
   RunSummary,
+  ShowcaseResponse,
 } from "./types";
 
 export const API_BASE =
@@ -18,7 +19,14 @@ export function apiUrl(path: string): string {
 async function jsonOrThrow<T>(resp: Response): Promise<T> {
   if (!resp.ok) {
     const detail = await resp.text().catch(() => resp.statusText);
-    throw new Error(`${resp.status} ${detail}`);
+    let message = detail || resp.statusText;
+    try {
+      const body = JSON.parse(detail) as { detail?: unknown };
+      if (typeof body.detail === "string") message = body.detail;
+    } catch {
+      // Keep the raw response body when it is not JSON.
+    }
+    throw new Error(`${resp.status} ${message}`);
   }
   return resp.json() as Promise<T>;
 }
@@ -77,6 +85,20 @@ export async function listRuns(): Promise<RunSummary[]> {
 export async function getRun(id: string): Promise<RunDetail> {
   return jsonOrThrow(
     await fetch(apiUrl(`/api/runs/${id}`), { cache: "no-store" }),
+  );
+}
+
+export async function getRunShowcase(id: string): Promise<ShowcaseResponse | null> {
+  const resp = await fetch(apiUrl(`/api/runs/${id}/showcase`), {
+    cache: "no-store",
+  });
+  if (resp.status === 404) return null;
+  return jsonOrThrow(resp);
+}
+
+export async function generateRunShowcase(id: string): Promise<ShowcaseResponse> {
+  return jsonOrThrow(
+    await fetch(apiUrl(`/api/runs/${id}/showcase`), { method: "POST" }),
   );
 }
 

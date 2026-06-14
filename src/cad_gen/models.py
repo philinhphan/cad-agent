@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-DEFAULT_MODEL = "openai:gpt-5.5"  # generator
+DEFAULT_MODEL = "google:gemini-3.5-flash"  # generator
 DEFAULT_CRITIC_MODEL = "google:gemini-3.5-flash"  # vision critic
 
 # Provider-agnostic reasoning/thinking effort levels (pydantic-ai's unified `thinking`
@@ -75,6 +75,75 @@ class Critique(BaseModel):
     summary: str
 
 
+class DrawingHoleConstraint(BaseModel):
+    """Hole callout parsed from a drawing interpretation."""
+
+    diameter_mm: float
+    count: int = 1
+    through: bool | None = None
+    source: str = ""
+
+
+class DrawingScalarConstraint(BaseModel):
+    """Single scalar drawing constraint such as a radius or angle."""
+
+    value_mm: float
+    count: int = 1
+    source: str = ""
+
+
+class DrawingAngleConstraint(BaseModel):
+    degrees: float
+    source: str = ""
+
+
+class DrawingCounterboreConstraint(BaseModel):
+    diameter_mm: float
+    depth_mm: float | None = None
+    source: str = ""
+
+
+class DrawingConstraints(BaseModel):
+    """Structured, machine-readable constraints extracted from a drawing digest."""
+
+    envelope_mm: tuple[float, float, float] | None = None
+    holes: list[DrawingHoleConstraint] = []
+    counterbores: list[DrawingCounterboreConstraint] = []
+    radii: list[DrawingScalarConstraint] = []
+    angles: list[DrawingAngleConstraint] = []
+    source_text: str = ""
+
+
+class ConstraintCheck(BaseModel):
+    """One deterministic or advisory check against generated geometry."""
+
+    name: str
+    status: Literal["pass", "fail", "unverified"]
+    message: str
+    expected: str | None = None
+    actual: str | None = None
+
+
+class ConstraintValidation(BaseModel):
+    """Post-generation validation of structured drawing constraints."""
+
+    passed: bool
+    checks: list[ConstraintCheck] = []
+    digest: str = ""
+
+
+class ReprojectionMismatch(BaseModel):
+    """Connected-component mismatch extracted from a colour reprojection overlay."""
+
+    kind: Literal["missing_drawing_line", "extra_model_line"]
+    view: str
+    bbox_norm: tuple[float, float, float, float]
+    centroid_norm: tuple[float, float]
+    area_px: int
+    area_frac: float
+    location: str
+
+
 class ReprojectionView(BaseModel):
     """Per-view geometric overlap of the reprojected STEP against one drawing view."""
 
@@ -84,6 +153,7 @@ class ReprojectionView(BaseModel):
     aspect_rel_err: float
     aspect_signed: float  # + => part too wide for its height in this view, - => too tall
     overlay_path: Path | None = None  # per-view colour overlay PNG (absolute fs path)
+    mismatches: list[ReprojectionMismatch] = []
 
 
 class ReprojectionReport(BaseModel):
@@ -102,6 +172,8 @@ class ReprojectionReport(BaseModel):
     views_found: int = 0
     mean_chamfer_pct: float | None = None
     views: dict[str, ReprojectionView] = {}  # only located views (front/top/side)
+    source_drawing: str | None = None
+    children: list["ReprojectionReport"] = []  # one child per input drawing for aggregate reports
     digest: str = ""  # compact text block fed to the critic (no images)
     interpretation: str = ""  # one global-vs-local interpretation line
     composite_path: Path | None = None  # labelled multi-view overlay PNG for the generator
@@ -116,6 +188,7 @@ class IterationRecord(BaseModel):
     render_path: Path | None = None
     critique: Critique | None = None
     reprojection: ReprojectionReport | None = None
+    constraint_validation: ConstraintValidation | None = None
     summary: str = ""
 
     @property
@@ -135,7 +208,7 @@ class RunConfig(BaseModel):
     # Reasoning/thinking effort for the generator model. `None` (default) leaves the
     # provider's own default untouched; CAD_GEN_REASONING_EFFORT overrides. Applies via
     # pydantic-ai's provider-agnostic `thinking` ModelSettings field, so it works for
-    # OpenAI, Gemini and Anthropic generator models alike.
+    # Gemini and Anthropic generator models alike.
     reasoning_effort: ReasoningEffort | None = Field(
         default_factory=lambda: os.environ.get("CAD_GEN_REASONING_EFFORT") or None,
         validate_default=True,  # run normalization + Literal check on the env-sourced default
@@ -192,6 +265,7 @@ class RunResult(BaseModel):
     spec: str
     drawings: list[str] = []  # persisted input-drawing filenames under run_dir/input/
     interpretation: str | None = None  # final (possibly edited) extracted-dimensions digest
+    constraints: DrawingConstraints | None = None
     best: IterationRecord
     iterations: list[IterationRecord]
     run_dir: Path

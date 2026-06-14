@@ -143,7 +143,7 @@ class TestRunConfig:
 
     def test_defaults(self):
         cfg = RunConfig()
-        assert cfg.model == "openai:gpt-5.5"
+        assert cfg.model == "google:gemini-3.5-flash"
         assert cfg.critic_model == "google:gemini-3.5-flash"
         assert cfg.view_model == "google:gemini-3.5-flash"
         assert cfg.max_iterations == 5
@@ -192,8 +192,8 @@ class TestRunConfig:
         assert cfg.critic_model == "google:gemini-3.5-flash"
 
     def test_critic_model_override_wins(self):
-        cfg = RunConfig(model="openai:gpt-5.5", critic_model="openai:gpt-5-mini")
-        assert cfg.critic_model == "openai:gpt-5-mini"
+        cfg = RunConfig(model="anthropic:claude-x", critic_model="google:gemini-3.5-pro")
+        assert cfg.critic_model == "google:gemini-3.5-pro"
 
     def test_models_resolve_from_env(self, monkeypatch):
         monkeypatch.setenv("CAD_GEN_MODEL", "anthropic:claude-opus-4-8")
@@ -210,9 +210,9 @@ class TestRunConfig:
         # A flag / request-body value beats the env var (precedence: explicit > env > default).
         monkeypatch.setenv("CAD_GEN_MODEL", "anthropic:claude-opus-4-8")
         monkeypatch.setenv("CAD_GEN_CRITIC_MODEL", "anthropic:claude-opus-4-8")
-        cfg = RunConfig(model="openai:gpt-5.5", critic_model="google:gemini-3.5-flash")
-        assert cfg.model == "openai:gpt-5.5"
-        assert cfg.critic_model == "google:gemini-3.5-flash"
+        cfg = RunConfig(model="google:gemini-3.5-flash", critic_model="google:gemini-3.5-pro")
+        assert cfg.model == "google:gemini-3.5-flash"
+        assert cfg.critic_model == "google:gemini-3.5-pro"
 
 
 class TestRunResult:

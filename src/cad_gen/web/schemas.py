@@ -10,3 +10,20 @@ from pydantic import BaseModel
 
 class StartRunResponse(BaseModel):
     run_id: str
+
+
+class ShowcaseImage(BaseModel):
+    url: str
+    content_type: str | None = None
+    file_name: str | None = None
+    width: int | None = None
+    height: int | None = None
+
+
+class ShowcaseResponse(BaseModel):
+    image: ShowcaseImage
+    model: str
+    prompt: str
+    source_render: str
+    created_at: float
+    cached: bool = False

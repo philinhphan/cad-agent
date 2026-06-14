@@ -6,7 +6,7 @@ boxes and scores the overlap. A wrong box yields a low score — never a false p
 README.md for the standalone tool and DECISIONS.md for the design rationale.
 """
 
-from cad_gen.reproject.adapter import ReprojectorFn, reproject_report
+from cad_gen.reproject.adapter import ReprojectorFn, combine_reprojection_reports, reproject_report
 from cad_gen.reproject.locator import (
     ViewBox,
     ViewLayout,
@@ -19,6 +19,7 @@ __all__ = [
     "ViewBox",
     "ViewLayout",
     "build_view_locator_agent",
+    "combine_reprojection_reports",
     "locate_drawing_views",
     "reproject_report",
 ]

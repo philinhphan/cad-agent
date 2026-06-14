@@ -113,6 +113,30 @@ def test_aspect_sign_verbalised(tmp_path):
     assert "too tall for its width" in rep.digest
 
 
+def test_overlay_mismatch_clusters_are_structured_and_digestible(tmp_path):
+    cv2 = pytest.importorskip("cv2")
+    import numpy as np
+
+    overlay = np.full((100, 120, 3), 255, np.uint8)
+    overlay[10:35, 20:28] = (255, 90, 0)   # blue in BGR = missing drawing line
+    overlay[60:75, 80:105] = (0, 140, 255)  # orange in BGR = extra model line
+    cv2.imwrite(str(tmp_path / "overlay_front.png"), overlay)
+
+    report = make_report(
+        {"front": make_view(0.65, overlay="overlay_front.png"), "top": make_view(0.97)}
+    )
+    rep = build(report, tmp_path)
+
+    front = rep.views["front"]
+    kinds = {m.kind for m in front.mismatches}
+    assert kinds == {"missing_drawing_line", "extra_model_line"}
+    assert all(m.view == "front" for m in front.mismatches)
+    assert all(0 <= m.bbox_norm[0] <= 1 and 0 <= m.centroid_norm[0] <= 1 for m in front.mismatches)
+    assert "largest front mismatches" in rep.digest
+    assert "missing drawing line" in rep.digest
+    assert "extra model line" in rep.digest
+
+
 # --------------------------------------------------------------------------- #
 # "Nicht bestrafen" — withholding heuristics
 # --------------------------------------------------------------------------- #

@@ -62,17 +62,17 @@ def test_help_lists_all_options():
 
 def test_missing_api_key_exits_with_code_2(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)  # no .env here
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
 
     result = runner.invoke(app, ["a 10mm cube"])
 
     assert result.exit_code == 2
-    assert "OPENAI_API_KEY" in result.output
+    assert "GEMINI_API_KEY or GOOGLE_API_KEY" in result.output
 
 
 def test_accepted_run_exits_0_and_reports_progress(tmp_path, monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("GEMINI_API_KEY", "test-key")  # default critic is google:gemini-3.5-flash
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
 
     captured_kwargs = {}
 
@@ -92,8 +92,7 @@ def test_accepted_run_exits_0_and_reports_progress(tmp_path, monkeypatch):
 
 
 def test_rejected_run_exits_1(tmp_path, monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("GEMINI_API_KEY", "test-key")  # default critic is google:gemini-3.5-flash
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
 
     async def fake_generate_cad(spec, config=None, **kwargs):
         return _fake_run_result(False, tmp_path / "run")
@@ -106,8 +105,7 @@ def test_rejected_run_exits_1(tmp_path, monkeypatch):
 
 
 def test_config_flags_reach_run_config(tmp_path, monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("GEMINI_API_KEY", "test-key")  # default critic is google:gemini-3.5-flash
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
 
     seen = {}
 
@@ -124,8 +122,8 @@ def test_config_flags_reach_run_config(tmp_path, monkeypatch):
             "a bracket",
             "--max-iterations", "7",
             "--threshold", "9",
-            "--model", "openai:gpt-5-mini",
-            "--critic-model", "openai:gpt-5.2",
+            "--model", "google:gemini-3.5-flash",
+            "--critic-model", "google:gemini-3.5-pro",
             "--timeout", "30",
             "--out", str(tmp_path / "elsewhere"),
         ],
@@ -136,15 +134,15 @@ def test_config_flags_reach_run_config(tmp_path, monkeypatch):
     assert seen["spec"] == "a bracket"
     assert cfg.max_iterations == 7
     assert cfg.score_threshold == 9
-    assert cfg.model == "openai:gpt-5-mini"
-    assert cfg.critic_model == "openai:gpt-5.2"
+    assert cfg.model == "google:gemini-3.5-flash"
+    assert cfg.critic_model == "google:gemini-3.5-pro"
     assert cfg.exec_timeout_s == 30
     assert cfg.out_dir == tmp_path / "elsewhere"
 
 
 def test_no_spec_and_no_drawing_exits_2(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
 
     result = runner.invoke(app, [])
 
@@ -163,8 +161,7 @@ def test_load_drawing_infers_jpeg_from_suffix(tmp_path):
 
 
 def test_drawing_run_threads_drawing_and_interpretation(tmp_path, monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("GEMINI_API_KEY", "test-key")  # default critic is google:gemini-3.5-flash
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     captured: dict = {}
 
     async def fake_interpret_drawing(agent, *, spec, drawings):

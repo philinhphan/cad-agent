@@ -1,6 +1,8 @@
 "use client";
 
-import { apiUrl } from "@/lib/api";
+import { useEffect, useState } from "react";
+import { apiUrl, generateRunShowcase, getRunShowcase } from "@/lib/api";
+import type { ShowcaseResponse } from "@/lib/types";
 import type { RunStreamState } from "@/lib/useRunStream";
 import { ScoreBadge } from "./ScoreBadge";
 import { RunStatusBadge } from "./RunStatusBadge";
@@ -17,6 +19,38 @@ export function RunView({
   const best = iterations.find((it) => it.record.index === bestIndex);
   const bestScore = best?.record.critique?.score ?? null;
   const inputUrl = (name: string) => apiUrl(`/api/runs/${runId}/input/${name}`);
+  const [showcase, setShowcase] = useState<ShowcaseResponse | null>(null);
+  const [showcaseLoading, setShowcaseLoading] = useState(false);
+  const [showcaseError, setShowcaseError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (status !== "done" || !runId) return;
+
+    let cancelled = false;
+    void getRunShowcase(runId)
+      .then((result) => {
+        if (!cancelled) setShowcase(result);
+      })
+      .catch(() => {
+        // Cached showcase lookup is opportunistic; generation remains manual.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [runId, status]);
+
+  async function handleShowcase() {
+    if (!runId) return;
+    setShowcaseLoading(true);
+    setShowcaseError(null);
+    try {
+      setShowcase(await generateRunShowcase(runId));
+    } catch (err) {
+      setShowcaseError(cleanError(err));
+    } finally {
+      setShowcaseLoading(false);
+    }
+  }
 
   return (
     <div className="mx-auto max-w-[1100px] px-5 py-8">
@@ -76,6 +110,55 @@ export function RunView({
             </div>
           </div>
         )}
+
+        {status === "done" && runId && (
+          <div className="mt-4 border-t border-line pt-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="tech-label mb-1">fal showcase</div>
+                <div className="text-[0.8rem] text-ink-dim">
+                  {showcase ? "image ready" : "optional final image"}
+                </div>
+              </div>
+              {!showcase && (
+                <button
+                  type="button"
+                  onClick={handleShowcase}
+                  disabled={showcaseLoading || !best?.urls.views}
+                  className="rounded-[var(--radius-tech)] border border-accent/50 bg-accent/10 px-3 py-1.5 text-[0.75rem] uppercase tracking-wider text-accent transition-colors hover:border-accent hover:bg-accent/15 disabled:cursor-not-allowed disabled:border-line disabled:bg-transparent disabled:text-ink-faint"
+                >
+                  {showcaseLoading ? "generating image" : "generate showcase"}
+                </button>
+              )}
+            </div>
+            {showcaseError && (
+              <p className="mt-3 rounded-[var(--radius-tech)] border border-bad/40 bg-bad/10 px-3 py-2 text-[0.78rem] text-bad">
+                {showcaseError}
+              </p>
+            )}
+            {showcase && (
+              <div className="mt-3 overflow-hidden rounded-[var(--radius-tech)] border border-line bg-[#0c1016]">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={showcase.image.url}
+                  alt="fal.ai showcase render of the final CAD model"
+                  className="max-h-[520px] w-full object-contain"
+                />
+                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line px-3 py-2">
+                  <span className="tech-label">{showcase.model}</span>
+                  <a
+                    href={showcase.image.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-[0.75rem] uppercase tracking-wider text-ink-dim transition-colors hover:text-accent"
+                  >
+                    open image
+                  </a>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* iterations */}
@@ -100,6 +183,13 @@ export function RunView({
       </div>
     </div>
   );
+}
+
+function cleanError(err: unknown): string {
+  if (err instanceof Error) {
+    return err.message.replace(/^\d+\s*/, "");
+  }
+  return "could not generate showcase image";
 }
 
 function Interpretation({ text }: { text: string }) {

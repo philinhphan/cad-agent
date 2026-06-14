@@ -8,8 +8,10 @@ from pydantic_ai.settings import ModelSettings
 
 from cad_gen.agents.prompts import CRITIC_INSTRUCTIONS
 from cad_gen.models import (
+    ConstraintValidation,
     Critique,
     DrawingAttachment,
+    DrawingConstraints,
     ExecutionResult,
     ReasoningEffort,
     ReprojectionReport,
@@ -51,6 +53,8 @@ async def run_critique(
     render_path: Path,
     drawings: list[DrawingAttachment] | None = None,
     reprojection: ReprojectionReport | None = None,
+    constraints: DrawingConstraints | None = None,
+    constraint_validation: ConstraintValidation | None = None,
 ) -> Critique:
     metrics_json = (
         execution.metrics.model_dump_json(indent=2) if execution.metrics else "{}"
@@ -88,10 +92,22 @@ async def run_critique(
             f"This check {verdict}.\n"
             f"{reprojection.digest}\n\n"
         )
+    constraint_block = ""
+    if constraints is not None:
+        constraint_block += (
+            "## Structured drawing constraints\n"
+            f"{constraints.model_dump_json(indent=2)}\n\n"
+        )
+    if constraint_validation is not None:
+        constraint_block += (
+            "## Deterministic constraint validation\n"
+            f"{constraint_validation.digest}\n\n"
+        )
     prompt = (
         f"{spec_block}"
         f"## Measured geometry (ground truth)\n{metrics_json}\n\n"
         f"## CadQuery code that produced it\n```python\n{execution.code}\n```\n\n"
+        f"{constraint_block}"
         f"{reproject_block}"
         f"{image_note}"
     )

@@ -5,6 +5,7 @@ subprocess is ever invoked (conftest sets ALLOW_MODEL_REQUESTS = False).
 """
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -50,7 +51,7 @@ def test_config_defaults_falls_back_to_builtins(monkeypatch):
     body = client.get("/api/config/defaults").json()
 
     assert body == {
-        "model": "openai:gpt-5.5",
+        "model": "google:gemini-3.5-flash",
         "critic_model": "google:gemini-3.5-flash",
     }
 
@@ -336,6 +337,67 @@ def test_get_unknown_run_404(tmp_path):
     client = TestClient(create_app(runs_dir=tmp_path))
 
     assert client.get("/api/runs/nope").status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# Phase 3b: optional fal.ai showcase image
+# --------------------------------------------------------------------------- #
+def test_showcase_requires_fal_key(tmp_path, monkeypatch):
+    _write_disk_run(tmp_path, "20260613_170000", [9])
+    monkeypatch.delenv("FAL_KEY", raising=False)
+    client = TestClient(create_app(runs_dir=tmp_path))
+
+    resp = client.post("/api/runs/20260613_170000/showcase")
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "FAL_KEY is not configured"
+
+
+def test_showcase_generates_from_best_render_and_caches(tmp_path, monkeypatch):
+    run_dir = _write_disk_run(tmp_path, "20260613_180000", [5, 9])
+    calls = []
+
+    class FakeFalClient:
+        @staticmethod
+        def upload_file(path):
+            calls.append(("upload", Path(path)))
+            assert Path(path) == run_dir / "iter_02" / "views.png"
+            return "https://v3.fal.media/files/source/views.png"
+
+        @staticmethod
+        def subscribe(application, *, arguments, client_timeout):
+            calls.append(("subscribe", application, arguments, client_timeout))
+            assert application == "fal-ai/flux-pro/kontext"
+            assert arguments["image_url"] == "https://v3.fal.media/files/source/views.png"
+            assert arguments["aspect_ratio"] == "16:9"
+            assert client_timeout == 180
+            return {
+                "images": [
+                    {
+                        "url": "https://fal.media/files/output/showcase.jpg",
+                        "content_type": "image/jpeg",
+                        "width": 1024,
+                        "height": 768,
+                    }
+                ]
+            }
+
+    monkeypatch.setenv("FAL_KEY", "test-key")
+    monkeypatch.setitem(sys.modules, "fal_client", FakeFalClient)
+    client = TestClient(create_app(runs_dir=tmp_path))
+
+    generated = client.post("/api/runs/20260613_180000/showcase").json()
+    cached = client.get("/api/runs/20260613_180000/showcase").json()
+    second_post = client.post("/api/runs/20260613_180000/showcase").json()
+
+    assert generated["image"]["url"] == "https://fal.media/files/output/showcase.jpg"
+    assert generated["model"] == "fal-ai/flux-pro/kontext"
+    assert generated["source_render"] == "/api/runs/20260613_180000/iterations/2/views.png"
+    assert generated["cached"] is False
+    assert cached["cached"] is True
+    assert second_post["cached"] is True
+    assert [c[0] for c in calls] == ["upload", "subscribe"]
+    assert (run_dir / "final" / "showcase.json").exists()
 
 
 # --------------------------------------------------------------------------- #

@@ -18,6 +18,7 @@ from cad_gen.models import (
 )
 from cad_gen.orchestrator import (
     _build_feedback,
+    _build_prompt,
     _match_key,
     _update_ledger,
     generate_cad,
@@ -492,6 +493,29 @@ async def test_text_only_prompt_stays_plain_string(tmp_path):
     assert not (result.run_dir / "drawing_interpretation.md").exists()
 
 
+def test_build_prompt_includes_coordinate_rich_primitive_hints():
+    drawing = DrawingAttachment(filename="d.png", media_type="image/png", data=PNG)
+    hint = (
+        "drawing_01.png primitive hints (Primitive extraction: circle=1):\n"
+        "- circle#0 conf=0.82 bbox=(0.400,0.300,0.100,0.120) "
+        "center_norm=(0.577,0.545) radius_norm~0.108"
+    )
+
+    prompt = _build_prompt(
+        "spec",
+        feedback=None,
+        interpretation="DIMS",
+        drawings=[drawing],
+        primitive_digests=[hint],
+    )
+
+    text = _prompt_text(prompt)
+    assert "Deterministic drawing primitive extraction" in text
+    assert "circle#0" in text
+    assert "center_norm=(0.577,0.545)" in text
+    assert _images_of(prompt)[0].data == PNG
+
+
 async def test_reproject_skipped_without_drawings(tmp_path):
     """Text-only runs must never invoke the reprojector (it needs a drawing)."""
     def boom_reprojector(*args, **kwargs):
@@ -647,6 +671,55 @@ async def test_view_locator_runs_once_and_threads_regions(tmp_path):
     assert len(seen_regions) == 2  # but threaded into every iteration
     assert seen_regions[0] == {"front": [0.1, 0.6, 0.3, 0.3], "top": [0.1, 0.1, 0.3, 0.3]}
     assert (result.run_dir / "view_layout.json").exists()
+
+
+async def test_reproject_runs_for_every_input_drawing(tmp_path):
+    reproject_calls: list[tuple[str, dict | None]] = []
+    locator_calls: list = []
+
+    def per_drawing_reprojector(step_path, drawing_path, out_dir, config, regions=None, timeout_s=120):
+        name = Path(drawing_path).name
+        reproject_calls.append((name, regions))
+        return ReprojectionReport(
+            evaluated=True,
+            passed=True,
+            source_drawing=name,
+            views_found=1,
+            digest=f"{name}: projected geometry matches",
+        )
+
+    generator = scripted_generator([("tool", GOOD_V1), ("text", "v1")], [])
+    critic = scripted_critic([critique_args(9, [])], [])
+    drawings = [
+        DrawingAttachment(filename="front.png", media_type="image/png", data=PNG),
+        DrawingAttachment(filename="detail.jpg", media_type="image/jpeg", data=PNG),
+    ]
+    config = RunConfig(max_iterations=1, score_threshold=8, out_dir=tmp_path / "runs")
+
+    result = await generate_cad(
+        "spec",
+        config,
+        drawings=drawings,
+        interpretation="DIMS",
+        generator_model=generator,
+        critic_model=critic,
+        executor=stub_executor,
+        renderer=stub_renderer,
+        view_locator_model=scripted_view_locator(VIEW_BOXES, locator_calls),
+        reprojector=per_drawing_reprojector,
+    )
+
+    assert [name for name, _ in reproject_calls] == ["drawing_01.png", "drawing_02.jpg"]
+    assert len(locator_calls) == 2
+    assert all(regions == VIEW_BOXES for _, regions in reproject_calls)
+    rp = result.iterations[0].reprojection
+    assert rp is not None and rp.evaluated is True
+    assert rp.passed is True
+    assert len(rp.children) == 2
+    assert "drawing_01.png" in rp.digest and "drawing_02.jpg" in rp.digest
+    assert (result.run_dir / "view_layout_01.json").exists()
+    assert (result.run_dir / "view_layout_02.json").exists()
+    assert (result.run_dir / "view_layout.json").exists()  # first-sheet compatibility alias
 
 
 async def test_reproject_overlay_and_verdict_reach_critic(tmp_path):

@@ -106,6 +106,23 @@ export interface RunDetail {
   iterations: IterationPayload[];
 }
 
+export interface ShowcaseImage {
+  url: string;
+  content_type?: string | null;
+  file_name?: string | null;
+  width?: number | null;
+  height?: number | null;
+}
+
+export interface ShowcaseResponse {
+  image: ShowcaseImage;
+  model: string;
+  prompt: string;
+  source_render: string;
+  created_at: number;
+  cached: boolean;
+}
+
 // Request config knobs the UI exposes (partial RunConfig).
 export interface RunConfigInput {
   model?: string;

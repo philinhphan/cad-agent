@@ -1,0 +1,1549 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kyrall Track · Drawing-to-CAD Pipeline</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f6f8fb;
+      --ink: #111827;
+      --muted: #5f6b7a;
+      --line: #c9d3df;
+      --panel: #ffffff;
+      --green: #0d7f68;
+      --blue: #285cc4;
+      --amber: #b46b00;
+      --red: #b73535;
+      --violet: #6a4fb3;
+      --shadow: 0 18px 48px rgba(17, 24, 39, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      background:
+        linear-gradient(90deg, rgba(17, 24, 39, 0.045) 1px, transparent 1px),
+        linear-gradient(0deg, rgba(17, 24, 39, 0.045) 1px, transparent 1px),
+        var(--paper);
+      background-size: 32px 32px;
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    button,
+    input,
+    textarea,
+    select {
+      font: inherit;
+      letter-spacing: 0;
+    }
+
+    .page {
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    .hero {
+      min-height: 92svh;
+      display: grid;
+      grid-template-columns: minmax(320px, 0.82fr) minmax(520px, 1.18fr);
+      align-items: stretch;
+      border-bottom: 1px solid rgba(17, 24, 39, 0.12);
+      background:
+        radial-gradient(circle at 74% 12%, rgba(13, 127, 104, 0.16), transparent 28%),
+        linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(230, 236, 245, 0.68));
+    }
+
+    .hero-copy {
+      padding: clamp(36px, 6vw, 72px);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 36px;
+    }
+
+    .kicker {
+      color: var(--green);
+      font-size: 0.78rem;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      max-width: 12ch;
+      margin: 18px 0 0;
+      font-size: clamp(3.2rem, 8vw, 7.8rem);
+      line-height: 0.88;
+      letter-spacing: 0;
+    }
+
+    .lede {
+      max-width: 33rem;
+      margin: 28px 0 0;
+      color: #344054;
+      font-size: clamp(1.05rem, 1.5vw, 1.35rem);
+      line-height: 1.55;
+    }
+
+    .meta-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      max-width: 35rem;
+    }
+
+    .meta {
+      min-height: 34px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid rgba(17, 24, 39, 0.14);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.62);
+      padding: 7px 10px;
+      color: #283241;
+      font-size: 0.82rem;
+      font-weight: 700;
+    }
+
+    a.meta {
+      text-decoration: none;
+    }
+
+    a.meta:hover,
+    a.meta:focus-visible {
+      border-color: rgba(13, 127, 104, 0.55);
+      background: rgba(255, 255, 255, 0.9);
+      outline: none;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--green);
+      box-shadow: 0 0 0 4px rgba(13, 127, 104, 0.12);
+    }
+
+    .hero-visual {
+      position: relative;
+      display: grid;
+      place-items: center;
+      min-height: 680px;
+      border-left: 1px solid rgba(17, 24, 39, 0.1);
+      overflow: hidden;
+      isolation: isolate;
+    }
+
+    .hero-visual::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(120deg, rgba(40, 92, 196, 0.12), transparent 44%),
+        linear-gradient(0deg, rgba(255, 255, 255, 0.5), transparent);
+      z-index: -2;
+    }
+
+    .blueprint {
+      width: min(88%, 920px);
+      height: auto;
+      filter: drop-shadow(0 28px 52px rgba(17, 24, 39, 0.18));
+      animation: settle 900ms cubic-bezier(.2, .8, .2, 1) both;
+    }
+
+    .draw-line {
+      stroke-dasharray: 900;
+      stroke-dashoffset: 900;
+      animation: trace 1.5s cubic-bezier(.22, .9, .28, 1) forwards;
+    }
+
+    .draw-line.delay-1 { animation-delay: 120ms; }
+    .draw-line.delay-2 { animation-delay: 260ms; }
+    .draw-line.delay-3 { animation-delay: 420ms; }
+    .draw-line.delay-4 { animation-delay: 560ms; }
+    .pulse {
+      transform-origin: center;
+      animation: nodePulse 2.6s ease-in-out infinite;
+    }
+
+    .section {
+      padding: clamp(54px, 7vw, 96px) clamp(22px, 5vw, 72px);
+    }
+
+    .section-head {
+      max-width: 1180px;
+      margin: 0 auto 34px;
+      display: grid;
+      grid-template-columns: minmax(240px, 0.68fr) minmax(300px, 1fr);
+      gap: 32px;
+      align-items: end;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: clamp(2rem, 4vw, 4rem);
+      line-height: 0.98;
+      letter-spacing: 0;
+    }
+
+    .section-head p {
+      margin: 0;
+      max-width: 44rem;
+      color: var(--muted);
+      font-size: 1.02rem;
+      line-height: 1.6;
+    }
+
+    .pipeline-shell {
+      max-width: 1180px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 270px minmax(0, 1fr);
+      gap: 24px;
+      align-items: stretch;
+    }
+
+    .stage-nav {
+      position: sticky;
+      top: 18px;
+      align-self: start;
+      display: grid;
+      gap: 8px;
+    }
+
+    .stage-button {
+      appearance: none;
+      width: 100%;
+      min-height: 52px;
+      border: 1px solid rgba(17, 24, 39, 0.12);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.74);
+      color: #263244;
+      cursor: pointer;
+      display: grid;
+      grid-template-columns: 34px 1fr;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 11px;
+      text-align: left;
+      transition: transform 160ms ease, border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+    }
+
+    .stage-button:hover,
+    .stage-button:focus-visible {
+      transform: translateX(4px);
+      border-color: rgba(13, 127, 104, 0.45);
+      box-shadow: 0 10px 28px rgba(17, 24, 39, 0.08);
+      outline: none;
+    }
+
+    .stage-button.active {
+      background: #10241f;
+      color: #f7fffb;
+      border-color: #10241f;
+    }
+
+    .stage-index {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      background: rgba(13, 127, 104, 0.13);
+      color: var(--green);
+      font-size: 0.82rem;
+      font-weight: 900;
+    }
+
+    .stage-button.active .stage-index {
+      background: rgba(255, 255, 255, 0.16);
+      color: #9ff1d9;
+    }
+
+    .stage-label {
+      min-width: 0;
+      font-size: 0.9rem;
+      font-weight: 800;
+      line-height: 1.15;
+    }
+
+    .diagram {
+      position: relative;
+      min-height: 820px;
+      border: 1px solid rgba(17, 24, 39, 0.13);
+      border-radius: 8px;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.92), rgba(247,250,253,0.92)),
+        var(--panel);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .diagram::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(90deg, rgba(17,24,39,0.05) 1px, transparent 1px),
+        linear-gradient(0deg, rgba(17,24,39,0.05) 1px, transparent 1px);
+      background-size: 28px 28px;
+      pointer-events: none;
+      mask-image: linear-gradient(180deg, rgba(0,0,0,0.8), transparent 80%);
+    }
+
+    .lane-label {
+      position: absolute;
+      left: 24px;
+      z-index: 2;
+      display: inline-flex;
+      align-items: center;
+      height: 28px;
+      border-radius: 8px;
+      padding: 0 10px;
+      background: rgba(17, 24, 39, 0.82);
+      color: #fff;
+      font-size: 0.72rem;
+      font-weight: 850;
+      text-transform: uppercase;
+    }
+
+    .lane-label.llm { top: 92px; }
+    .lane-label.det { top: 350px; background: rgba(13, 127, 104, 0.92); }
+    .lane-label.out { top: 620px; background: rgba(40, 92, 196, 0.9); }
+
+    .flow-svg {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+
+    .flow-path {
+      fill: none;
+      stroke: rgba(17, 24, 39, 0.22);
+      stroke-width: 2.2;
+      stroke-dasharray: 8 8;
+      animation: moveDash 2.2s linear infinite;
+    }
+
+    .flow-path.green { stroke: rgba(13, 127, 104, 0.72); }
+    .flow-path.blue { stroke: rgba(40, 92, 196, 0.72); }
+    .flow-path.red { stroke: rgba(183, 53, 53, 0.62); }
+
+    .node {
+      position: absolute;
+      width: 212px;
+      min-height: 116px;
+      border: 1px solid rgba(17, 24, 39, 0.12);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.92);
+      padding: 14px;
+      box-shadow: 0 12px 30px rgba(17, 24, 39, 0.09);
+      transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease, background 180ms ease;
+      z-index: 4;
+    }
+
+    .node:hover,
+    .node.active {
+      transform: translateY(-4px);
+      border-color: rgba(13, 127, 104, 0.55);
+      background: #ffffff;
+      box-shadow: 0 22px 44px rgba(17, 24, 39, 0.14);
+    }
+
+    .node h3 {
+      margin: 0;
+      font-size: 1rem;
+      line-height: 1.16;
+      letter-spacing: 0;
+    }
+
+    .node p {
+      margin: 9px 0 0;
+      color: var(--muted);
+      font-size: 0.78rem;
+      line-height: 1.42;
+    }
+
+    .node .tag {
+      display: inline-flex;
+      align-items: center;
+      height: 22px;
+      border-radius: 7px;
+      padding: 0 7px;
+      margin-bottom: 10px;
+      color: #fff;
+      background: var(--green);
+      font-size: 0.68rem;
+      font-weight: 900;
+      text-transform: uppercase;
+    }
+
+    .node.llm .tag { background: var(--violet); }
+    .node.det .tag { background: var(--green); }
+    .node.cv .tag { background: var(--blue); }
+    .node.warn .tag { background: var(--amber); }
+    .node.final .tag { background: #111827; }
+
+    .node.input { left: 6%; top: 36px; }
+    .node.interpret { left: 36%; top: 36px; }
+    .node.primitive { left: 68%; top: 36px; }
+    .node.prompt { left: 6%; top: 236px; }
+    .node.generator { left: 36%; top: 236px; }
+    .node.sandbox { left: 68%; top: 236px; }
+    .node.render { left: 6%; top: 456px; }
+    .node.reproject { left: 36%; top: 456px; }
+    .node.critic { left: 68%; top: 456px; }
+    .node.refine { left: 20%; top: 670px; }
+    .node.final { left: 56%; top: 670px; }
+
+    .loop-band {
+      position: absolute;
+      left: 3.5%;
+      right: 3.5%;
+      top: 208px;
+      height: 380px;
+      border: 2px dashed rgba(40, 92, 196, 0.34);
+      border-radius: 8px;
+      background: rgba(40, 92, 196, 0.035);
+      z-index: 1;
+    }
+
+    .loop-title {
+      position: absolute;
+      left: 22px;
+      top: -15px;
+      padding: 4px 9px;
+      border-radius: 7px;
+      background: #ffffff;
+      color: var(--blue);
+      font-size: 0.74rem;
+      font-weight: 900;
+      text-transform: uppercase;
+    }
+
+    .detail-band {
+      background: #111827;
+      color: #f9fafb;
+    }
+
+    .detail-grid {
+      max-width: 1180px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 0.85fr 1.15fr;
+      gap: clamp(28px, 5vw, 72px);
+      align-items: start;
+    }
+
+    .detail-grid h2 {
+      color: #fff;
+    }
+
+    .detail-grid p {
+      color: #cbd5e1;
+      line-height: 1.65;
+    }
+
+    .evidence {
+      display: grid;
+      gap: 12px;
+    }
+
+    .evidence-row {
+      display: grid;
+      grid-template-columns: 150px 1fr;
+      gap: 18px;
+      border-top: 1px solid rgba(255, 255, 255, 0.15);
+      padding-top: 14px;
+    }
+
+    .evidence-row strong {
+      color: #9ff1d9;
+      font-size: 0.86rem;
+      text-transform: uppercase;
+    }
+
+    .evidence-row span {
+      color: #e5e7eb;
+      line-height: 1.5;
+    }
+
+    .artifact-section {
+      background: linear-gradient(180deg, #f6f8fb, #e9eef6);
+    }
+
+    .case-page {
+      min-height: 100svh;
+      padding: clamp(54px, 7vw, 96px) clamp(22px, 5vw, 72px);
+      background:
+        linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px),
+        linear-gradient(0deg, rgba(255,255,255,0.04) 1px, transparent 1px),
+        #101820;
+      background-size: 30px 30px;
+      color: #f8fafc;
+    }
+
+    .case-wrap {
+      max-width: 1260px;
+      margin: 0 auto;
+      display: grid;
+      gap: 26px;
+    }
+
+    .case-hero {
+      display: grid;
+      grid-template-columns: minmax(280px, 0.8fr) minmax(420px, 1.2fr);
+      gap: clamp(26px, 4vw, 56px);
+      align-items: end;
+    }
+
+    .case-title h2 {
+      max-width: 11ch;
+      color: #ffffff;
+      font-size: clamp(3rem, 7vw, 7rem);
+      line-height: 0.88;
+    }
+
+    .case-title p {
+      max-width: 34rem;
+      margin: 24px 0 0;
+      color: #cbd5e1;
+      font-size: 1.06rem;
+      line-height: 1.62;
+    }
+
+    .case-stats {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 28px;
+    }
+
+    .case-stat {
+      min-height: 88px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 8px;
+      padding: 13px;
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .case-stat strong {
+      display: block;
+      color: #ffffff;
+      font-size: clamp(1.38rem, 2.4vw, 2.2rem);
+      line-height: 1;
+    }
+
+    .case-stat span {
+      display: block;
+      margin-top: 8px;
+      color: #9fb0c3;
+      font-size: 0.78rem;
+      font-weight: 750;
+      text-transform: uppercase;
+    }
+
+    .case-media {
+      margin: 0;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: 8px;
+      background: #ffffff;
+      box-shadow: 0 30px 70px rgba(0, 0, 0, 0.26);
+    }
+
+    .case-media img,
+    .iteration-image img,
+    .overlay-frame img {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    .case-caption {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
+      color: #334155;
+      background: #f8fafc;
+      font-size: 0.82rem;
+      font-weight: 800;
+    }
+
+    .score-track {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 8px;
+    }
+
+    .score-step {
+      border-top: 1px solid rgba(255, 255, 255, 0.18);
+      padding-top: 14px;
+    }
+
+    .score-step span {
+      display: block;
+      color: #9fb0c3;
+      font-size: 0.78rem;
+      font-weight: 850;
+      text-transform: uppercase;
+    }
+
+    .score-step strong {
+      display: block;
+      margin: 8px 0 10px;
+      color: #ffffff;
+      font-size: clamp(2rem, 4vw, 4.6rem);
+      line-height: 0.95;
+    }
+
+    .score-bar {
+      position: relative;
+      height: 8px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: rgba(255, 255, 255, 0.12);
+    }
+
+    .score-bar::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: var(--score);
+      border-radius: inherit;
+      background: linear-gradient(90deg, #b73535, #b46b00);
+      animation: growBar 900ms cubic-bezier(.2, .8, .2, 1) both;
+    }
+
+    .score-step.accepted .score-bar::before {
+      background: linear-gradient(90deg, #0d7f68, #9ff1d9);
+    }
+
+    .case-grid {
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      gap: 20px;
+      align-items: stretch;
+      margin-top: 16px;
+    }
+
+    .run-tabs {
+      display: grid;
+      align-content: start;
+      gap: 10px;
+    }
+
+    .run-tab {
+      appearance: none;
+      min-height: 86px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.06);
+      color: #dbeafe;
+      cursor: pointer;
+      padding: 13px;
+      text-align: left;
+      transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+    }
+
+    .run-tab:hover,
+    .run-tab:focus-visible {
+      transform: translateX(4px);
+      border-color: rgba(159, 241, 217, 0.6);
+      outline: none;
+    }
+
+    .run-tab.active {
+      background: #f8fafc;
+      color: #101820;
+      border-color: #f8fafc;
+    }
+
+    .run-tab span {
+      display: block;
+      color: inherit;
+      opacity: 0.7;
+      font-size: 0.75rem;
+      font-weight: 850;
+      text-transform: uppercase;
+    }
+
+    .run-tab strong {
+      display: block;
+      margin-top: 6px;
+      font-size: 1.1rem;
+      line-height: 1.15;
+    }
+
+    .iteration-panel {
+      display: none;
+      grid-template-columns: minmax(360px, 1.2fr) minmax(260px, 0.8fr);
+      gap: 18px;
+      align-items: stretch;
+      min-height: 520px;
+    }
+
+    .iteration-panel.active {
+      display: grid;
+    }
+
+    .iteration-image {
+      margin: 0;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 8px;
+      background: #ffffff;
+    }
+
+    .iteration-copy {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 18px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 8px;
+      padding: 18px;
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .iteration-copy h3 {
+      margin: 0;
+      color: #ffffff;
+      font-size: clamp(1.5rem, 2.5vw, 2.4rem);
+      line-height: 1.02;
+    }
+
+    .iteration-copy p {
+      color: #cbd5e1;
+      line-height: 1.55;
+    }
+
+    .run-metrics {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .run-metric {
+      min-height: 72px;
+      border-top: 1px solid rgba(255, 255, 255, 0.18);
+      padding-top: 10px;
+    }
+
+    .run-metric strong {
+      display: block;
+      color: #ffffff;
+      font-size: 1.2rem;
+    }
+
+    .run-metric span {
+      display: block;
+      margin-top: 5px;
+      color: #9fb0c3;
+      font-size: 0.74rem;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+
+    .issue-list {
+      margin: 0;
+      padding-left: 18px;
+      color: #dbe4ee;
+      line-height: 1.45;
+    }
+
+    .overlay-compare {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+      margin-top: 12px;
+    }
+
+    .overlay-frame {
+      margin: 0;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 8px;
+      background: #ffffff;
+    }
+
+    .overlay-frame figcaption {
+      padding: 12px 14px;
+      color: #0f172a;
+      background: #f8fafc;
+      font-size: 0.88rem;
+      font-weight: 850;
+    }
+
+    .proof-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 6px;
+    }
+
+    .proof {
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 8px;
+      padding: 15px;
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .proof strong {
+      display: block;
+      color: #9ff1d9;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+    }
+
+    .proof span {
+      display: block;
+      margin-top: 7px;
+      color: #f8fafc;
+      line-height: 1.35;
+    }
+
+    .artifact-map {
+      max-width: 1180px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .artifact {
+      min-height: 178px;
+      border: 1px solid rgba(17, 24, 39, 0.12);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.82);
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .artifact strong {
+      font-size: 1rem;
+      line-height: 1.2;
+    }
+
+    .artifact code {
+      display: block;
+      margin-top: 12px;
+      color: var(--muted);
+      white-space: normal;
+      overflow-wrap: anywhere;
+      font-size: 0.78rem;
+      line-height: 1.45;
+    }
+
+    .artifact .mini {
+      width: 42px;
+      height: 42px;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      background: rgba(13, 127, 104, 0.12);
+      color: var(--green);
+      font-weight: 900;
+    }
+
+    .foot {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 30px clamp(22px, 5vw, 72px) 54px;
+      color: var(--muted);
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      border-top: 1px solid rgba(17, 24, 39, 0.12);
+      font-size: 0.86rem;
+    }
+
+    @keyframes trace {
+      to { stroke-dashoffset: 0; }
+    }
+
+    @keyframes settle {
+      from { opacity: 0; transform: translateY(24px) scale(0.98); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    @keyframes moveDash {
+      to { stroke-dashoffset: -32; }
+    }
+
+    @keyframes nodePulse {
+      0%, 100% { opacity: 0.92; transform: scale(1); }
+      50% { opacity: 1; transform: scale(1.04); }
+    }
+
+    @keyframes growBar {
+      from { transform: scaleX(0); transform-origin: left; }
+      to { transform: scaleX(1); transform-origin: left; }
+    }
+
+    @media (max-width: 1060px) {
+      .hero {
+        grid-template-columns: 1fr;
+      }
+
+      .hero-visual {
+        min-height: 520px;
+        border-left: 0;
+        border-top: 1px solid rgba(17, 24, 39, 0.1);
+      }
+
+      .section-head,
+      .pipeline-shell,
+      .detail-grid,
+      .case-hero,
+      .case-grid,
+      .iteration-panel {
+        grid-template-columns: 1fr;
+      }
+
+      .stage-nav {
+        position: relative;
+        top: 0;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .diagram {
+        min-height: 1040px;
+      }
+
+      .node {
+        width: min(42vw, 245px);
+      }
+
+      .node.input { left: 5%; top: 36px; }
+      .node.interpret { left: 53%; top: 36px; }
+      .node.primitive { left: 5%; top: 186px; }
+      .node.prompt { left: 53%; top: 186px; }
+      .node.generator { left: 5%; top: 380px; }
+      .node.sandbox { left: 53%; top: 380px; }
+      .node.render { left: 5%; top: 570px; }
+      .node.reproject { left: 53%; top: 570px; }
+      .node.critic { left: 5%; top: 760px; }
+      .node.refine { left: 53%; top: 760px; }
+      .node.final { left: 29%; top: 910px; }
+
+      .loop-band {
+        top: 350px;
+        height: 560px;
+      }
+
+      .lane-label.llm { top: 350px; }
+      .lane-label.det { top: 548px; }
+      .lane-label.out { top: 884px; }
+
+      .artifact-map {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .case-stats,
+      .proof-strip {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .overlay-compare {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 640px) {
+      h1 {
+        font-size: clamp(2.8rem, 18vw, 4.2rem);
+      }
+
+      .hero-copy {
+        padding: 30px 20px;
+      }
+
+      .hero-visual {
+        min-height: 390px;
+      }
+
+      .stage-nav,
+      .artifact-map,
+      .case-stats,
+      .score-track,
+      .run-metrics,
+      .proof-strip {
+        grid-template-columns: 1fr;
+      }
+
+      .case-page {
+        padding: 42px 18px;
+      }
+
+      .diagram {
+        min-height: 1480px;
+      }
+
+      .flow-svg {
+        display: none;
+      }
+
+      .loop-band {
+        left: 16px;
+        right: 16px;
+        top: 542px;
+        height: 610px;
+      }
+
+      .lane-label {
+        left: 24px;
+      }
+
+      .lane-label.llm { top: 548px; }
+      .lane-label.det { top: 848px; }
+      .lane-label.out { top: 1194px; }
+
+      .node {
+        left: 24px !important;
+        right: 24px;
+        width: auto;
+        min-height: 104px;
+      }
+
+      .node.input { top: 34px; }
+      .node.interpret { top: 156px; }
+      .node.primitive { top: 278px; }
+      .node.prompt { top: 430px; }
+      .node.generator { top: 566px; }
+      .node.sandbox { top: 700px; }
+      .node.render { top: 852px; }
+      .node.reproject { top: 986px; }
+      .node.critic { top: 1120px; }
+      .node.refine { top: 1268px; }
+      .node.final { top: 1398px; }
+
+      .evidence-row {
+        grid-template-columns: 1fr;
+        gap: 6px;
+      }
+
+      .foot {
+        flex-direction: column;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero" aria-label="Pipeline overview">
+      <div class="hero-copy">
+        <div>
+          <div class="kicker">Kyrall Track · Hackathon Pipeline</div>
+          <h1>Drawing to CAD</h1>
+          <p class="lede">
+            Aus einer technischen Zeichnung entsteht ein editierbares CadQuery-Modell:
+            Gemini interpretiert, generiert und kritisiert, während OpenCV und der Kernel
+            messbare Gegenbeweise liefern.
+          </p>
+        </div>
+        <div class="meta-row" aria-label="Key pipeline properties">
+          <span class="meta"><span class="dot"></span> Parametrisch statt Mesh-only</span>
+          <span class="meta"><span class="dot"></span> Self-refine Loop</span>
+          <span class="meta"><span class="dot"></span> CV-gestützte Kritik</span>
+          <span class="meta"><span class="dot"></span> STEP + STL + Report</span>
+          <a class="meta" href="#run-showcase"><span class="dot"></span> Run Showcase</a>
+        </div>
+      </div>
+
+      <div class="hero-visual" aria-hidden="true">
+        <svg class="blueprint" viewBox="0 0 980 680" role="img">
+          <defs>
+            <linearGradient id="plate" x1="0" x2="1" y1="0" y2="1">
+              <stop offset="0" stop-color="#ffffff"/>
+              <stop offset="1" stop-color="#e5edf7"/>
+            </linearGradient>
+            <linearGradient id="solid" x1="0" x2="1" y1="0" y2="1">
+              <stop offset="0" stop-color="#69c3ad"/>
+              <stop offset="1" stop-color="#245dbf"/>
+            </linearGradient>
+          </defs>
+
+          <rect x="36" y="38" width="908" height="604" rx="8" fill="url(#plate)" stroke="#b9c6d6"/>
+          <path class="draw-line delay-1" d="M108 226H424V428H108Z" fill="none" stroke="#1f2937" stroke-width="4"/>
+          <path class="draw-line delay-2" d="M158 275H374M158 379H374M206 226V428M326 226V428" fill="none" stroke="#8392a5" stroke-width="2"/>
+          <circle class="draw-line delay-3" cx="206" cy="275" r="24" fill="none" stroke="#285cc4" stroke-width="4"/>
+          <circle class="draw-line delay-3" cx="326" cy="275" r="24" fill="none" stroke="#285cc4" stroke-width="4"/>
+          <circle class="draw-line delay-3" cx="206" cy="379" r="24" fill="none" stroke="#285cc4" stroke-width="4"/>
+          <circle class="draw-line delay-3" cx="326" cy="379" r="24" fill="none" stroke="#285cc4" stroke-width="4"/>
+          <path class="draw-line delay-4" d="M112 470H420M108 488l20-36M424 488l-20-36" fill="none" stroke="#b46b00" stroke-width="3"/>
+          <text x="188" y="522" fill="#5f6b7a" font-size="26" font-weight="700">60 x 40 x 8 mm</text>
+          <text x="160" y="178" fill="#5f6b7a" font-size="24" font-weight="700">4x Ø4.5 THRU</text>
+
+          <path d="M492 330C540 330 540 330 588 330" fill="none" stroke="#0d7f68" stroke-width="6" stroke-linecap="round"/>
+          <path d="M565 306l36 24-36 24" fill="none" stroke="#0d7f68" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+
+          <g transform="translate(650 160)">
+            <path d="M42 116 176 42 318 112 178 202Z" fill="#8bd9c8" stroke="#0b4f43" stroke-width="3"/>
+            <path d="M42 116v148l136 84V202Z" fill="#2d6cc9" stroke="#153f89" stroke-width="3"/>
+            <path d="M178 202v146l140-86V112Z" fill="#0d7f68" stroke="#0b4f43" stroke-width="3"/>
+            <path d="M94 152 228 82M136 178 272 106M90 252l50 31M214 310l54-34" fill="none" stroke="rgba(255,255,255,.45)" stroke-width="4"/>
+            <circle class="pulse" cx="110" cy="160" r="16" fill="#f6f8fb" stroke="#111827" stroke-width="4"/>
+            <circle class="pulse" cx="228" cy="100" r="16" fill="#f6f8fb" stroke="#111827" stroke-width="4"/>
+            <circle class="pulse" cx="98" cy="252" r="16" fill="#f6f8fb" stroke="#111827" stroke-width="4"/>
+            <circle class="pulse" cx="240" cy="276" r="16" fill="#f6f8fb" stroke="#111827" stroke-width="4"/>
+          </g>
+
+          <text x="680" y="546" fill="#111827" font-size="28" font-weight="850">CadQuery → STEP</text>
+          <text x="680" y="582" fill="#5f6b7a" font-size="21" font-weight="650">editable · validated · reportable</text>
+        </svg>
+      </div>
+    </section>
+
+    <section class="section" aria-label="Interactive pipeline map">
+      <div class="section-head">
+        <h2>Pipeline Map</h2>
+        <p>
+          Die Präsentationsansicht trennt LLM-Entscheidungen, deterministische Prüfungen
+          und erzeugte Artefakte. Jeder Schritt zeigt Input, Output und den Zweck im Loop.
+        </p>
+      </div>
+
+      <div class="pipeline-shell">
+        <nav class="stage-nav" aria-label="Pipeline stages">
+          <button class="stage-button active" type="button" data-target="input">
+            <span class="stage-index">0</span><span class="stage-label">Input &amp; Run Setup</span>
+          </button>
+          <button class="stage-button" type="button" data-target="interpret">
+            <span class="stage-index">1</span><span class="stage-label">Drawing Intelligence</span>
+          </button>
+          <button class="stage-button" type="button" data-target="generator">
+            <span class="stage-index">2</span><span class="stage-label">Generator Loop</span>
+          </button>
+          <button class="stage-button" type="button" data-target="reproject">
+            <span class="stage-index">3</span><span class="stage-label">CV Reprojection</span>
+          </button>
+          <button class="stage-button" type="button" data-target="critic">
+            <span class="stage-index">4</span><span class="stage-label">Vision Critic</span>
+          </button>
+          <button class="stage-button" type="button" data-target="final">
+            <span class="stage-index">5</span><span class="stage-label">Final Artifacts</span>
+          </button>
+        </nav>
+
+        <div class="diagram" aria-label="Pipeline diagram">
+          <div class="loop-band"><span class="loop-title">self-refine ≤ max_iterations</span></div>
+          <span class="lane-label llm">LLM / VLM</span>
+          <span class="lane-label det">Kernel + CV</span>
+          <span class="lane-label out">Artifacts</span>
+
+          <svg class="flow-svg" viewBox="0 0 900 820" preserveAspectRatio="none" aria-hidden="true">
+            <path class="flow-path green" d="M150 94 C250 94 270 94 372 94"/>
+            <path class="flow-path green" d="M520 94 C610 94 620 94 730 94"/>
+            <path class="flow-path" d="M150 295 C250 295 270 295 372 295"/>
+            <path class="flow-path" d="M520 295 C610 295 620 295 730 295"/>
+            <path class="flow-path blue" d="M730 352 C610 430 280 390 152 508"/>
+            <path class="flow-path blue" d="M152 514 C250 514 280 514 372 514"/>
+            <path class="flow-path blue" d="M520 514 C610 514 620 514 730 514"/>
+            <path class="flow-path red" d="M730 570 C725 650 440 650 330 724"/>
+            <path class="flow-path green" d="M430 724 C510 724 530 724 650 724"/>
+            <path class="flow-path red" d="M330 724 C128 670 94 524 116 352"/>
+          </svg>
+
+          <article class="node input active" data-node="input">
+            <span class="tag">Input</span>
+            <h3>Spec + Zeichnungen + RunConfig</h3>
+            <p>Text, JPEG/PNG-Drawing und Gemini-Defaults werden unter `run_dir/` persistiert.</p>
+          </article>
+
+          <article class="node llm interpret" data-node="interpret">
+            <span class="tag">Gemini</span>
+            <h3>Interpret Drawing</h3>
+            <p>Dimension Digest aus der Zeichnung, optional mit Review-Gate im CLI oder Web.</p>
+          </article>
+
+          <article class="node cv primitive" data-node="interpret">
+            <span class="tag">OpenCV</span>
+            <h3>Primitives + View Boxes</h3>
+            <p>Linien, Kreise, Arcs, Textregionen und Front/Top/Side-Layouts als strukturierte Hinweise.</p>
+          </article>
+
+          <article class="node prompt" data-node="generator">
+            <span class="tag">Prompt</span>
+            <h3>Build Prompt</h3>
+            <p>Spec, Dimensionen, primitive Hints, Feedback und Overlay des aktuellen Champions.</p>
+          </article>
+
+          <article class="node llm generator" data-node="generator">
+            <span class="tag">Gemini</span>
+            <h3>Generate CadQuery</h3>
+            <p>Der Agent schreibt parametrischen Code und muss das Execution-Tool erfolgreich nutzen.</p>
+          </article>
+
+          <article class="node det sandbox" data-node="generator">
+            <span class="tag">OCCT</span>
+            <h3>Sandbox Execution</h3>
+            <p>Subprocess erzeugt STEP, STL und Kernel-Metriken: BBox, Volumen, Faces, Solids.</p>
+          </article>
+
+          <article class="node det render" data-node="reproject">
+            <span class="tag">Render</span>
+            <h3>4-View Render</h3>
+            <p>Iso, Front, Top und Right View werden als messbarer visueller Kontext gerendert.</p>
+          </article>
+
+          <article class="node cv reproject" data-node="reproject">
+            <span class="tag">CV Check</span>
+            <h3>Reproject STEP onto Drawing</h3>
+            <p>HLR-Projektion gegen Zeichnungslinien: Coverage, Chamfer, Aspect, Mismatch Cluster.</p>
+          </article>
+
+          <article class="node llm critic" data-node="critic">
+            <span class="tag">Gemini</span>
+            <h3>Vision Critic</h3>
+            <p>Render, Drawing, Overlay, Metrics und Code führen zu Score, Issues und Suggestions.</p>
+          </article>
+
+          <article class="node warn refine" data-node="critic">
+            <span class="tag">Gate</span>
+            <h3>Accept or Refine</h3>
+            <p>Score ≥ Threshold akzeptiert. Sonst geht Champion-Feedback in die nächste Runde.</p>
+          </article>
+
+          <article class="node final" data-node="final">
+            <span class="tag">Output</span>
+            <h3>Final Model + Report</h3>
+            <p>Bestes Modell landet in `final/` mit STEP, STL, Views, Critique und `run_result.json`.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section detail-band" aria-label="Computer vision role">
+      <div class="detail-grid">
+        <div>
+          <div class="kicker">Why CV matters</div>
+          <h2>Die Kritik bekommt messbare Evidenz.</h2>
+          <p>
+            Das Modell entscheidet nicht allein aus einem hübschen Render. Die Pipeline extrahiert
+            primitive Zeichnungsgeometrie, reprojected das STEP zurück auf die Originalansichten
+            und gibt dem Critic konkrete Stellen, an denen Linien fehlen oder zu viel Geometrie steht.
+          </p>
+        </div>
+        <div class="evidence">
+          <div class="evidence-row">
+            <strong>Before loop</strong>
+            <span>OpenCV extrahiert Line Segments, Circles, Arcs, Centerlines, Arrows und Text Regions als Prompt-Hints.</span>
+          </div>
+          <div class="evidence-row">
+            <strong>Per iteration</strong>
+            <span>Der generierte STEP wird in Front/Top/Side projiziert und gegen die Zeichnungsmasken geprüft.</span>
+          </div>
+          <div class="evidence-row">
+            <strong>For critic</strong>
+            <span>Coverage, Aspect-Fehler und Mismatch-Cluster begrenzen False Accepts bei komplexeren Modellen.</span>
+          </div>
+          <div class="evidence-row">
+            <strong>For generator</strong>
+            <span>Das Overlay zeigt dem nächsten Versuch, wo Features fehlen oder überstehen, ohne Maße aus Pixeln zu raten.</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section artifact-section" aria-label="Generated artifacts">
+      <div class="section-head">
+        <h2>Outputs</h2>
+        <p>
+          Jeder Lauf bleibt auditierbar: Zeichnung, Interpretation, Constraints, Primitive,
+          Iterationsdaten und finale Geometrie liegen nachvollziehbar im Run-Verzeichnis.
+        </p>
+      </div>
+      <div class="artifact-map">
+        <div class="artifact">
+          <div class="mini">01</div>
+          <strong>Drawing Intelligence</strong>
+          <code>drawing_interpretation.md · drawing_constraints.json · drawing_primitives_NN.json</code>
+        </div>
+        <div class="artifact">
+          <div class="mini">02</div>
+          <strong>Geometry Evidence</strong>
+          <code>metrics.json · views.png · report.json · overlay_composite.png</code>
+        </div>
+        <div class="artifact">
+          <div class="mini">03</div>
+          <strong>Editable CAD</strong>
+          <code>model.py · model.step · model.stl · final/</code>
+        </div>
+        <div class="artifact">
+          <div class="mini">04</div>
+          <strong>Decision Trail</strong>
+          <code>iteration.json · critique.json · report.md · run_result.json</code>
+        </div>
+      </div>
+    </section>
+
+    <section class="case-page" id="run-showcase" aria-label="Run showcase 20260614_124339">
+      <div class="case-wrap">
+        <div class="case-hero">
+          <div class="case-title">
+            <div class="kicker">Run 20260614_124339 · real artifacts</div>
+            <h2>From 6 to 10</h2>
+            <p>
+              Dieser Lauf rekonstruiert das Tier-4-Teil „24-01-10-L STOP SIMPLE“ nur aus
+              der technischen Zeichnung. Der Agent bleibt zwei Iterationen bei 6/10, nutzt
+              die Kritik am Upright-Profil und akzeptiert in Iteration 3 mit 10/10.
+            </p>
+            <div class="case-stats" aria-label="Run summary">
+              <div class="case-stat">
+                <strong>3</strong>
+                <span>iterations run</span>
+              </div>
+              <div class="case-stat">
+                <strong>10/10</strong>
+                <span>final critic score</span>
+              </div>
+              <div class="case-stat">
+                <strong>135 × 85 × 65</strong>
+                <span>bbox mm</span>
+              </div>
+              <div class="case-stat">
+                <strong>1</strong>
+                <span>watertight solid</span>
+              </div>
+            </div>
+          </div>
+
+          <figure class="case-media">
+            <img src="runs/20260614_124339/input/drawing_01.jpg" alt="Original engineering drawing used as the run input">
+            <figcaption class="case-caption">
+              <span>Input drawing · MMGS · ABS · Tier 4</span>
+              <span>source: runs/20260614_124339</span>
+            </figcaption>
+          </figure>
+        </div>
+
+        <div class="score-track" aria-label="Critic score progression">
+          <div class="score-step" style="--score: 60%">
+            <span>Iteration 1</span>
+            <strong>6/10</strong>
+            <div class="score-bar"></div>
+          </div>
+          <div class="score-step" style="--score: 60%">
+            <span>Iteration 2</span>
+            <strong>6/10</strong>
+            <div class="score-bar"></div>
+          </div>
+          <div class="score-step accepted" style="--score: 100%">
+            <span>Iteration 3</span>
+            <strong>10/10</strong>
+            <div class="score-bar"></div>
+          </div>
+        </div>
+
+        <div class="case-grid">
+          <div class="run-tabs" aria-label="Iteration selector">
+            <button class="run-tab active" type="button" data-run-target="run-iter-1">
+              <span>Iteration 1 · rejected</span>
+              <strong>Correct envelope, wrong upright profile</strong>
+            </button>
+            <button class="run-tab" type="button" data-run-target="run-iter-2">
+              <span>Iteration 2 · rejected</span>
+              <strong>Recognizable but overbuilt</strong>
+            </button>
+            <button class="run-tab" type="button" data-run-target="run-iter-3">
+              <span>Iteration 3 · accepted</span>
+              <strong>Profile corrected, final score 10</strong>
+            </button>
+          </div>
+
+          <div class="run-panels">
+            <article class="iteration-panel active" id="run-iter-1">
+              <figure class="iteration-image">
+                <img src="runs/20260614_124339/iter_01/views.png" alt="Iteration 1 rendered CAD views">
+              </figure>
+              <div class="iteration-copy">
+                <div>
+                  <div class="kicker">Iteration 1 · score 6/10</div>
+                  <h3>Die Grundform steht, aber die Clevis-Details sitzen falsch.</h3>
+                  <p>
+                    Der Kernel misst den richtigen Gesamt-Envelope, doch der Critic erkennt ein
+                    falsches Upright-Profil und vertikal falsch ausgerichtete Lug-Holes.
+                  </p>
+                  <ul class="issue-list">
+                    <li>Rear face interpretiert die 25-mm-Beziehung falsch.</li>
+                    <li>Lug holes und Counterbores sind relativ zur Zeichnung verschoben.</li>
+                  </ul>
+                </div>
+                <div class="run-metrics">
+                  <div class="run-metric"><strong>135 × 85 × 65</strong><span>bbox mm</span></div>
+                  <div class="run-metric"><strong>201,548 mm³</strong><span>volume</span></div>
+                  <div class="run-metric"><strong>94 / 100 / 85%</strong><span>front/top/side coverage</span></div>
+                  <div class="run-metric"><strong>29 faces</strong><span>topology</span></div>
+                </div>
+              </div>
+            </article>
+
+            <article class="iteration-panel" id="run-iter-2">
+              <figure class="iteration-image">
+                <img src="runs/20260614_124339/iter_02/views.png" alt="Iteration 2 rendered CAD views">
+              </figure>
+              <div class="iteration-copy">
+                <div>
+                  <div class="kicker">Iteration 2 · score 6/10</div>
+                  <h3>Der Agent verbessert die Silhouette, baut aber zu viel Material ein.</h3>
+                  <p>
+                    Die zweite Version sieht plausibler aus, aber der Upright-Rear-Face liegt bei
+                    X = 42.41 mm statt X = 25 mm. Das Volumen springt sichtbar nach oben.
+                  </p>
+                  <ul class="issue-list">
+                    <li>25-mm-Dimension als Top-Flat statt als Gesamtposition verstanden.</li>
+                    <li>Ein zusätzlicher 12-mm-Vertical-Step bleibt an der Base stehen.</li>
+                  </ul>
+                </div>
+                <div class="run-metrics">
+                  <div class="run-metric"><strong>135 × 85 × 65</strong><span>bbox mm</span></div>
+                  <div class="run-metric"><strong>254,675 mm³</strong><span>volume spike</span></div>
+                  <div class="run-metric"><strong>83 / 94 / 97%</strong><span>front/top/side coverage</span></div>
+                  <div class="run-metric"><strong>29 faces</strong><span>topology</span></div>
+                </div>
+              </div>
+            </article>
+
+            <article class="iteration-panel" id="run-iter-3">
+              <figure class="iteration-image">
+                <img src="runs/20260614_124339/iter_03/views.png" alt="Iteration 3 final rendered CAD views">
+              </figure>
+              <div class="iteration-copy">
+                <div>
+                  <div class="kicker">Iteration 3 · accepted</div>
+                  <h3>Die Profilfehler sind korrigiert; der Critic akzeptiert mit 10/10.</h3>
+                  <p>
+                    Das Side-Profil folgt jetzt der Zeichnung, der Envelope bleibt exakt, und die
+                    finale Geometrie ist ein einzelner watertight Solid mit STEP/STL-Export.
+                  </p>
+                  <ul class="issue-list">
+                    <li>Upright-Rear-Face und Base-Slope stimmen mit der Zeichnung überein.</li>
+                    <li>Final critique: high accuracy on all dimensions and features.</li>
+                  </ul>
+                </div>
+                <div class="run-metrics">
+                  <div class="run-metric"><strong>135 × 85 × 65</strong><span>bbox mm</span></div>
+                  <div class="run-metric"><strong>200,014 mm³</strong><span>final volume</span></div>
+                  <div class="run-metric"><strong>94 / 100 / 97%</strong><span>front/top/side coverage</span></div>
+                  <div class="run-metric"><strong>27 faces</strong><span>cleaner topology</span></div>
+                </div>
+              </div>
+            </article>
+          </div>
+        </div>
+
+        <div class="overlay-compare" aria-label="Reprojection overlay comparison">
+          <figure class="overlay-frame">
+            <img src="runs/20260614_124339/iter_02/reproject/overlay_composite.png" alt="Iteration 2 reprojection overlay with mismatches">
+            <figcaption>Iteration 2 overlay · orange/blue clusters flag the misplaced upright and extra base geometry.</figcaption>
+          </figure>
+          <figure class="overlay-frame">
+            <img src="runs/20260614_124339/iter_03/reproject/overlay_composite.png" alt="Iteration 3 reprojection overlay after correction">
+            <figcaption>Iteration 3 overlay · drawing lines mostly align; remaining blue markers are minor locator gaps.</figcaption>
+          </figure>
+        </div>
+
+        <div class="proof-strip" aria-label="Extracted drawing constraints">
+          <div class="proof">
+            <strong>Envelope</strong>
+            <span>135 × 85 × 65 mm passed deterministically in every iteration.</span>
+          </div>
+          <div class="proof">
+            <strong>Hole system</strong>
+            <span>Ø15 THRU + Ø30 ↧12 center boss; 2× Ø5 THRU ALL + Ø10 ↧5 lug holes.</span>
+          </div>
+          <div class="proof">
+            <strong>Profile cues</strong>
+            <span>R77, R26, R20, R15 and 15° upright face extracted from the drawing digest.</span>
+          </div>
+          <div class="proof">
+            <strong>Final output</strong>
+            <span>final/model.py, model.step, model.stl, views.png, critique.json and run_result.json.</span>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <span>Kyrall Track · Drawing-to-CAD Agentic Pipeline</span>
+    <span>Standalone HTML · no app imports · presentation ready</span>
+  </footer>
+
+  <script>
+    const buttons = Array.from(document.querySelectorAll(".stage-button"));
+    const nodes = Array.from(document.querySelectorAll(".node"));
+
+    function activate(target) {
+      buttons.forEach((button) => {
+        button.classList.toggle("active", button.dataset.target === target);
+      });
+      nodes.forEach((node) => {
+        node.classList.toggle("active", node.dataset.node === target);
+      });
+    }
+
+    buttons.forEach((button) => {
+      button.addEventListener("click", () => activate(button.dataset.target));
+    });
+
+    nodes.forEach((node) => {
+      node.addEventListener("mouseenter", () => activate(node.dataset.node));
+      node.addEventListener("focusin", () => activate(node.dataset.node));
+    });
+
+    let index = 0;
+    const order = buttons.map((button) => button.dataset.target);
+    window.setInterval(() => {
+      if (document.hidden) return;
+      index = (index + 1) % order.length;
+      activate(order[index]);
+    }, 4200);
+
+    const runTabs = Array.from(document.querySelectorAll(".run-tab"));
+    const runPanels = Array.from(document.querySelectorAll(".iteration-panel"));
+
+    function activateRun(target) {
+      runTabs.forEach((tab) => {
+        tab.classList.toggle("active", tab.dataset.runTarget === target);
+      });
+      runPanels.forEach((panel) => {
+        panel.classList.toggle("active", panel.id === target);
+      });
+    }
+
+    runTabs.forEach((tab) => {
+      tab.addEventListener("click", () => activateRun(tab.dataset.runTarget));
+    });
+  </script>
+</body>
+</html>
