@@ -18,6 +18,18 @@ def build_critic_agent(model: str | Model) -> Agent[None, Critique]:
     return Agent(model, output_type=Critique, instructions=CRITIC_INSTRUCTIONS)
 
 
+def _overlay_bytes(reprojection: ReprojectionReport | None) -> bytes | None:
+    """Bytes of the reprojection overlay composite, if one was produced."""
+    if (
+        reprojection is None
+        or not reprojection.evaluated
+        or reprojection.composite_path is None
+    ):
+        return None
+    path = Path(reprojection.composite_path)
+    return path.read_bytes() if path.exists() else None
+
+
 async def run_critique(
     agent: Agent[None, Critique],
     *,
@@ -36,26 +48,32 @@ async def run_critique(
         if spec.strip()
         else "## Specification\n(none — the part is defined by the attached drawing.)\n\n"
     )
+    overlay_bytes = _overlay_bytes(reprojection)
     if drawings:
         image_note = (
             "The FIRST attached image shows isometric / front / top / right views of the "
-            "produced geometry. The remaining image(s) are the ORIGINAL engineering "
-            "drawing(s) and are the source of truth — evaluate how faithfully the geometry "
-            "reproduces the drawing's dimensions, features, hole types, angles and symmetry."
+            "produced geometry. The next image(s) are the ORIGINAL engineering drawing(s) "
+            "and are the source of truth — evaluate how faithfully the geometry reproduces "
+            "the drawing's dimensions, features, hole types, angles and symmetry."
         )
     else:
         image_note = (
-            "The attached image shows isometric / front / top / right views of the "
+            "The FIRST attached image shows isometric / front / top / right views of the "
             "geometry. Evaluate how well it satisfies the specification."
+        )
+    if overlay_bytes is not None:
+        image_note += (
+            " The LAST attached image is the deterministic reprojection overlay: blue = a "
+            "drawing line the model failed to reproduce, orange = a model line absent from "
+            "the drawing, red = match — use it to locate missing or misplaced geometry."
         )
     reproject_block = ""
     if reprojection is not None and reprojection.evaluated:
+        verdict = "PASSED" if reprojection.passed else "DID NOT PASS"
         reproject_block = (
-            "## Independent geometric reprojection check (deterministic, ADVISORY)\n"
-            f"{reprojection.digest}\n"
-            "Treat low coverage as evidence that drawing geometry is missing or extra, but a "
-            "uniformly low result across all views can be a global orientation/scale difference "
-            "rather than a feature error — weigh it, do not treat it as decisive.\n\n"
+            "## Independent geometric reprojection check (deterministic)\n"
+            f"This check {verdict}.\n"
+            f"{reprojection.digest}\n\n"
         )
     prompt = (
         f"{spec_block}"
@@ -71,5 +89,7 @@ async def run_critique(
     content.extend(
         BinaryContent(data=d.data, media_type=d.media_type) for d in drawings
     )
+    if overlay_bytes is not None:
+        content.append(BinaryContent(data=overlay_bytes, media_type="image/png"))
     result = await agent.run(content)
     return result.output

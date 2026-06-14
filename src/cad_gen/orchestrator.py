@@ -73,7 +73,9 @@ async def generate_cad(
             view_locator_model or config.view_model, drawings[0], run_dir
         )
 
-    generator = build_generator_agent(generator_model or config.model)
+    generator = build_generator_agent(
+        generator_model or config.model, reasoning_effort=config.reasoning_effort
+    )
     critic = build_critic_agent(critic_model or config.critic_model)
 
     iterations: list[IterationRecord] = []

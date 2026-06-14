@@ -6,9 +6,10 @@ from pathlib import Path
 
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models import Model
+from pydantic_ai.settings import ModelSettings
 
 from cad_gen.agents.prompts import GENERATOR_INSTRUCTIONS
-from cad_gen.models import ExecutionResult
+from cad_gen.models import ExecutionResult, ReasoningEffort
 from cad_gen.sandbox.executor import run_cad_code
 
 ExecutorFn = Callable[..., ExecutionResult]
@@ -39,12 +40,18 @@ class IterationWorkspace:
         return result
 
 
-def build_generator_agent(model: str | Model) -> Agent[IterationWorkspace, str]:
+def build_generator_agent(
+    model: str | Model, *, reasoning_effort: ReasoningEffort | None = None
+) -> Agent[IterationWorkspace, str]:
+    # `thinking` is pydantic-ai's provider-agnostic reasoning-effort knob; when unset we
+    # pass no model_settings so the provider's own default is left untouched.
+    model_settings = ModelSettings(thinking=reasoning_effort) if reasoning_effort else None
     agent: Agent[IterationWorkspace, str] = Agent(
         model,
         deps_type=IterationWorkspace,
         output_type=str,
         instructions=GENERATOR_INSTRUCTIONS,
+        model_settings=model_settings,
     )
 
     @agent.tool

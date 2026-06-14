@@ -2,11 +2,17 @@
 
 import os
 from pathlib import Path
+from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 DEFAULT_MODEL = "openai:gpt-5.5"  # generator
 DEFAULT_CRITIC_MODEL = "google:gemini-3.5-flash"  # vision critic
+
+# Provider-agnostic reasoning/thinking effort levels (pydantic-ai's unified `thinking`
+# ModelSettings field). `None` leaves the provider default untouched.
+ReasoningEffort = Literal["minimal", "low", "medium", "high", "xhigh"]
+REASONING_EFFORTS: tuple[ReasoningEffort, ...] = ("minimal", "low", "medium", "high", "xhigh")
 
 
 class DrawingAttachment(BaseModel):
@@ -112,6 +118,14 @@ class RunConfig(BaseModel):
     model: str = Field(
         default_factory=lambda: os.environ.get("CAD_GEN_MODEL") or DEFAULT_MODEL
     )
+    # Reasoning/thinking effort for the generator model. `None` (default) leaves the
+    # provider's own default untouched; CAD_GEN_REASONING_EFFORT overrides. Applies via
+    # pydantic-ai's provider-agnostic `thinking` ModelSettings field, so it works for
+    # OpenAI, Gemini and Anthropic generator models alike.
+    reasoning_effort: ReasoningEffort | None = Field(
+        default_factory=lambda: os.environ.get("CAD_GEN_REASONING_EFFORT") or None,
+        validate_default=True,  # run normalization + Literal check on the env-sourced default
+    )
     critic_model: str | None = None
     # Vision model that locates the drawing's orthographic views for the reprojection
     # check (provider:model). Defaults to the vision-critic default; CAD_GEN_VIEW_MODEL
@@ -131,6 +145,15 @@ class RunConfig(BaseModel):
     reproject_timeout_s: float = 120
     reproject_low_coverage: float = 0.80  # below this a view reads as "geometry missing"
     reproject_orientation_coverage: float = 0.55  # all views below => likely orientation, withhold
+
+    @field_validator("reasoning_effort", mode="before")
+    @classmethod
+    def _normalize_reasoning_effort(cls, value: object) -> object:
+        """Accept env strings case-insensitively; treat empty/blank as unset."""
+        if isinstance(value, str):
+            stripped = value.strip().lower()
+            return stripped or None
+        return value
 
     @model_validator(mode="after")
     def _default_critic_model(self) -> "RunConfig":

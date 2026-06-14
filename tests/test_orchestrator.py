@@ -119,12 +119,17 @@ def _images_of(content) -> list:
     return [c for c in content if isinstance(c, BinaryContent)]
 
 
-def capturing_critic(critiques: list[dict], prompts_seen: list[str]) -> FunctionModel:
-    """Like scripted_critic but records the critic's user-prompt text per call."""
+def capturing_critic(
+    critiques: list[dict], prompts_seen: list[str], images: list | None = None
+) -> FunctionModel:
+    """Like scripted_critic but records the critic's user-prompt text (and images) per call."""
     state = {"i": 0}
 
     def fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        prompts_seen.append(_prompt_text(messages[0].parts[0].content))
+        content = messages[0].parts[0].content
+        prompts_seen.append(_prompt_text(content))
+        if images is not None and isinstance(content, list):
+            images.extend(c for c in content if isinstance(c, BinaryContent))
         args = critiques[state["i"]]
         state["i"] += 1
         return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, args)])
@@ -636,6 +641,34 @@ async def test_view_locator_runs_once_and_threads_regions(tmp_path):
     assert len(seen_regions) == 2  # but threaded into every iteration
     assert seen_regions[0] == {"front": [0.1, 0.6, 0.3, 0.3], "top": [0.1, 0.1, 0.3, 0.3]}
     assert (result.run_dir / "view_layout.json").exists()
+
+
+async def test_reproject_overlay_and_verdict_reach_critic(tmp_path):
+    """The reprojection verdict (text) and overlay composite (image) reach the critic so it
+    can act on a failed geometric check (the runs/sucess3 false-accept fix)."""
+    critic_prompts: list[str] = []
+    critic_images: list = []
+    generator = scripted_generator([("tool", GOOD_V1), ("text", "v1")], [])
+    critic = capturing_critic([critique_args(9, [])], critic_prompts, critic_images)
+    drawings = [DrawingAttachment(filename="d.png", media_type="image/png", data=PNG)]
+    config = RunConfig(max_iterations=1, score_threshold=8, out_dir=tmp_path / "runs")
+
+    await generate_cad(
+        "spec",
+        config,
+        drawings=drawings,
+        interpretation="DIMS",
+        generator_model=generator,
+        critic_model=critic,
+        executor=stub_executor,
+        renderer=stub_renderer,
+        view_locator_model=scripted_view_locator(VIEW_BOXES),
+        reprojector=stub_reprojector(),  # evaluated=True, passed=False (default)
+    )
+
+    # the failed-check verdict reaches the critic as text, and the overlay as an image
+    assert any("DID NOT PASS" in p for p in critic_prompts)
+    assert any(img.data == COMPOSITE_PNG for img in critic_images)
 
 
 async def test_view_locator_not_called_without_drawings(tmp_path):

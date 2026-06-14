@@ -113,6 +113,18 @@ async def test_generator_attempt_budget_blocks_further_executions(tmp_path):
     assert ws.last_success is None
 
 
+def test_reasoning_effort_sets_thinking_model_setting():
+    # pydantic-ai's provider-agnostic `thinking` ModelSettings field carries the effort.
+    agent = build_generator_agent(scripted_generator_model([], "x"), reasoning_effort="high")
+    assert agent.model_settings == {"thinking": "high"}
+
+
+def test_no_reasoning_effort_leaves_model_settings_unset():
+    # No model_settings injected → the provider's own default is left untouched.
+    agent = build_generator_agent(scripted_generator_model([], "x"))
+    assert agent.model_settings is None
+
+
 async def test_attempts_run_in_separate_subdirectories(tmp_path):
     calls: list[str] = []
     seen_dirs: list[Path] = []
