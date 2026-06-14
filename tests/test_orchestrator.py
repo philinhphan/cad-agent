@@ -8,6 +8,7 @@ from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCall
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from cad_gen.models import (
+    Critique,
     DrawingAttachment,
     ExecutionResult,
     GeometryMetrics,
@@ -15,7 +16,12 @@ from cad_gen.models import (
     ReprojectionReport,
     RunConfig,
 )
-from cad_gen.orchestrator import generate_cad
+from cad_gen.orchestrator import (
+    _build_feedback,
+    _match_key,
+    _update_ledger,
+    generate_cad,
+)
 
 PNG = b"\x89PNG\r\n\x1a\nfakepng"
 
@@ -688,3 +694,68 @@ async def test_view_locator_not_called_without_drawings(tmp_path):
         renderer=stub_renderer,
         view_locator_model=FunctionModel(boom),
     )  # reaching here without boom firing = pass
+
+
+# --- Issue ledger + feedback (A) ---------------------------------------------
+
+def _champ(index: int, code: str, score: int, issues: list[str]) -> IterationRecord:
+    """A successful champion record carrying a critique with `issues`."""
+    rec = IterationRecord(
+        index=index,
+        execution=ExecutionResult(success=True, code=code, duration_s=0.1),
+    )
+    rec.critique = Critique(
+        matches_spec=False, score=score, issues=issues,
+        suggestions=[f"fix: {i}" for i in issues], summary="x",
+    )
+    return rec
+
+
+def test_match_key_ignores_numbers():
+    # the same defect with a different wrong value must still match
+    a = _match_key("height is 12mm but the spec says 8mm")
+    b = _match_key("height is 10mm but the spec says 8mm")
+    assert a == b
+
+
+def test_update_ledger_tracks_persistence_and_resolution():
+    flange = "The vertical upright flange is completely missing."
+    c1 = _champ(1, "v1", 4, [flange, "height is 12mm but spec says 8mm"])
+    ledger = _update_ledger([], c1)
+    assert {t.streak for t in ledger} == {1}
+
+    # same champion next round: both issues persist -> streak grows, value change still matches
+    c2 = _champ(2, "v1", 4, [flange, "height is 10mm but spec says 8mm"])
+    ledger = _update_ledger(ledger, c2)
+    assert all(t.streak == 2 for t in ledger)
+    assert all(t.first_seen == 1 for t in ledger)
+
+    # flange resolved (disappears), a brand-new issue appears -> fresh streak
+    c3 = _champ(3, "v3", 6, ["the corner fillet R20 is missing"])
+    ledger = _update_ledger(ledger, c3)
+    assert len(ledger) == 1
+    assert ledger[0].streak == 1 and ledger[0].first_seen == 3
+
+
+def test_build_feedback_escalates_persistent_issues():
+    flange = "vertical upright flange is missing"
+    c1 = _champ(1, "v1", 4, [flange])
+    ledger = _update_ledger([], c1)
+    ledger = _update_ledger(ledger, _champ(2, "v1", 4, [flange]))  # survived twice
+
+    fb = _build_feedback(c1, latest=c1, ledger=ledger)
+    assert "STILL UNFIXED after 2 attempts" in fb
+    assert "TOP PRIORITY" in fb
+    assert "v1" in fb  # champion code carried for incremental editing
+
+
+def test_build_feedback_embeds_regression_diff():
+    champ = _champ(1, "import cadquery as cq\nresult = box(10)  # good", 6, ["needs hole"])
+    regressed = _champ(2, "import cadquery as cq\nresult = box(9)  # broke it", 2, ["worse"])
+    ledger = _update_ledger([], champ)
+
+    fb = _build_feedback(champ, latest=regressed, ledger=ledger)
+    assert "WORSE than the best" in fb
+    assert "```diff" in fb
+    assert "# broke it" in fb  # the regressing line is shown to the model
+    assert "regression" in fb.lower()

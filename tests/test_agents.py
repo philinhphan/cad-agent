@@ -7,8 +7,18 @@ from pydantic_ai.models.test import TestModel
 
 from cad_gen.agents.critic import build_critic_agent, run_critique
 from cad_gen.agents.drawing_parser import build_drawing_parser_agent, interpret_drawing
-from cad_gen.agents.generator import IterationWorkspace, build_generator_agent
-from cad_gen.models import DrawingAttachment, ExecutionResult, GeometryMetrics
+from cad_gen.agents.generator import (
+    IterationWorkspace,
+    build_generator_agent,
+    format_describe,
+    format_selector,
+)
+from cad_gen.models import (
+    DrawingAttachment,
+    ExecutionResult,
+    GeometryMetrics,
+    IntrospectionResult,
+)
 
 PNG = b"\x89PNG\r\n\x1a\nfakepngdata"
 
@@ -125,6 +135,17 @@ def test_no_reasoning_effort_leaves_model_settings_unset():
     assert agent.model_settings is None
 
 
+def test_critic_reasoning_effort_sets_thinking_model_setting():
+    # The Gemini critic gets the same provider-agnostic `thinking` knob as the generator.
+    agent = build_critic_agent(scripted_generator_model([], "x"), reasoning_effort="high")
+    assert agent.model_settings == {"thinking": "high"}
+
+
+def test_critic_no_reasoning_effort_leaves_model_settings_unset():
+    agent = build_critic_agent(scripted_generator_model([], "x"))
+    assert agent.model_settings is None
+
+
 async def test_attempts_run_in_separate_subdirectories(tmp_path):
     calls: list[str] = []
     seen_dirs: list[Path] = []
@@ -227,3 +248,115 @@ async def test_critic_receives_render_then_input_drawings(tmp_path):
     assert len(images) == 2
     assert images[0].media_type == "image/png"  # the rendered views
     assert images[1].media_type == "image/jpeg"  # the input drawing
+
+
+# --- Introspection tools (B) -------------------------------------------------
+
+SELECTOR_DATA = {
+    "mode": "selector", "target": "edges", "selector": "|Z", "count": 4,
+    "matches": [{"type": "LINE", "center": [10.0, 0, 0], "dir": [0, 0, 1.0], "length": 10.0}],
+    "truncated": False, "selector_error": None,
+}
+DESCRIBE_DATA = {
+    "mode": "describe", "bbox_mm": [10.0, 10.0, 10.0],
+    "n_solids": 1, "n_faces": 6, "n_edges": 12,
+    "faces": [{"type": "PLANE", "count": 6,
+               "sample": [{"type": "PLANE", "center": [0, 0, 5.0], "normal": [0, 0, 1.0],
+                           "area": 100.0}], "truncated": False}],
+    "edges": [{"type": "LINE", "count": 12,
+               "sample": [{"type": "LINE", "center": [0, 0, 0], "dir": [0, 0, 1.0],
+                           "length": 10.0}], "truncated": False}],
+}
+
+
+def fake_introspector_factory(call_log: list):
+    """Stub introspector: records calls, returns canned data per query mode."""
+
+    def fake(code: str, query: dict, out_dir, timeout_s: float = 30) -> IntrospectionResult:
+        call_log.append((code, query))
+        data = SELECTOR_DATA if query.get("mode") == "selector" else DESCRIBE_DATA
+        return IntrospectionResult(ok=True, data=data)
+
+    return fake
+
+
+def scripted_multitool_model(script: list) -> FunctionModel:
+    """`script` entries are (tool_name, args) or ("text", message), consumed in order."""
+    state = {"i": 0}
+
+    def fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        name, payload = script[state["i"]]
+        state["i"] += 1
+        if name == "text":
+            return ModelResponse(parts=[TextPart(payload)])
+        return ModelResponse(parts=[ToolCallPart(name, payload)])
+
+    return FunctionModel(fn)
+
+
+async def test_probe_tools_do_not_consume_execute_budget(tmp_path):
+    exec_calls: list[str] = []
+    probe_calls: list = []
+    ws = IterationWorkspace(
+        iter_dir=tmp_path,
+        max_attempts=1,  # a single execute attempt allowed
+        executor=fake_executor_factory(exec_calls),
+        introspector=fake_introspector_factory(probe_calls),
+    )
+    model = scripted_multitool_model([
+        ("check_selector", {"code": GOOD_CODE, "target": "edges", "selector": "|Z"}),
+        ("inspect_geometry", {"code": GOOD_CODE}),
+        ("execute_cad_code", {"code": GOOD_CODE}),
+        ("text", "Built a 10mm cube with verified fillet edges."),
+    ])
+    agent = build_generator_agent(model)
+
+    result = await agent.run("a 10mm cube", deps=ws)
+
+    # two probes ran but cost nothing from the execute budget
+    assert len(probe_calls) == 2
+    assert len(ws.introspections) == 2
+    assert exec_calls == [GOOD_CODE], "execute ran once despite max_attempts=1"
+    assert len(ws.attempts) == 1
+    assert ws.last_success is not None and ws.last_success.code == GOOD_CODE
+    assert result.output.startswith("Built a 10mm cube")
+
+
+async def test_probe_budget_blocks_further_probes(tmp_path):
+    probe_calls: list = []
+    ws = IterationWorkspace(
+        iter_dir=tmp_path,
+        max_attempts=4,
+        max_inspect=1,  # only one probe allowed
+        executor=fake_executor_factory([]),
+        introspector=fake_introspector_factory(probe_calls),
+    )
+    model = scripted_multitool_model([
+        ("check_selector", {"code": GOOD_CODE, "target": "edges", "selector": "|Z"}),
+        ("check_selector", {"code": GOOD_CODE, "target": "edges", "selector": ">Z"}),
+        ("execute_cad_code", {"code": GOOD_CODE}),
+        ("text", "done"),
+    ])
+    agent = build_generator_agent(model)
+
+    await agent.run("a cube", deps=ws)
+
+    assert len(probe_calls) == 1, "the introspector must not run past the inspect budget"
+    assert len(ws.introspections) == 1
+
+
+def test_format_selector_flags_empty_and_error():
+    ok = format_selector(SELECTOR_DATA)
+    assert '.edges("|Z") matched 4 edges' in ok
+
+    empty = format_selector({**SELECTOR_DATA, "count": 0, "matches": []})
+    assert "EMPTY" in empty and "crash" in empty
+
+    err = format_selector({**SELECTOR_DATA, "count": 0, "selector_error": "IndexError: boom"})
+    assert "RAISED IndexError: boom" in err
+
+
+def test_format_describe_summarizes_topology():
+    out = format_describe(DESCRIBE_DATA)
+    assert "solids 1, faces 6, edges 12" in out
+    assert "PLANE x6" in out and "LINE x12" in out

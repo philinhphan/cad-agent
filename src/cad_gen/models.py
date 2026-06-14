@@ -51,6 +51,20 @@ class ExecutionResult(BaseModel):
     duration_s: float
 
 
+class IntrospectionResult(BaseModel):
+    """Outcome of a read-only geometry probe (see sandbox/introspect.py).
+
+    ADVISORY tool output for the generator only — never exported, measured, or scored.
+    `ok=False` means the *code* failed to build (`error` holds the traceback). A bad
+    *selector* still comes back `ok=True`, with the diagnostic (count 0 + selector_error)
+    inside `data`.
+    """
+
+    ok: bool
+    error: str | None = None
+    data: dict | None = None
+
+
 class Critique(BaseModel):
     """Structured visual critique returned by the critic agent."""
 
@@ -126,6 +140,13 @@ class RunConfig(BaseModel):
         default_factory=lambda: os.environ.get("CAD_GEN_REASONING_EFFORT") or None,
         validate_default=True,  # run normalization + Literal check on the env-sourced default
     )
+    # Same, for the (Gemini) vision critic — lets it think before judging, which closes the
+    # false-accepts where a no-thinking flash rubber-stamped a flawed part. Opt-in via
+    # CAD_GEN_CRITIC_REASONING_EFFORT; `None` leaves the provider default untouched.
+    critic_reasoning_effort: ReasoningEffort | None = Field(
+        default_factory=lambda: os.environ.get("CAD_GEN_CRITIC_REASONING_EFFORT") or None,
+        validate_default=True,
+    )
     critic_model: str | None = None
     # Vision model that locates the drawing's orthographic views for the reprojection
     # check (provider:model). Defaults to the vision-critic default; CAD_GEN_VIEW_MODEL
@@ -146,7 +167,7 @@ class RunConfig(BaseModel):
     reproject_low_coverage: float = 0.80  # below this a view reads as "geometry missing"
     reproject_orientation_coverage: float = 0.55  # all views below => likely orientation, withhold
 
-    @field_validator("reasoning_effort", mode="before")
+    @field_validator("reasoning_effort", "critic_reasoning_effort", mode="before")
     @classmethod
     def _normalize_reasoning_effort(cls, value: object) -> object:
         """Accept env strings case-insensitively; treat empty/blank as unset."""

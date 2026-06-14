@@ -4,18 +4,31 @@ from pathlib import Path
 
 from pydantic_ai import Agent, BinaryContent
 from pydantic_ai.models import Model
+from pydantic_ai.settings import ModelSettings
 
 from cad_gen.agents.prompts import CRITIC_INSTRUCTIONS
 from cad_gen.models import (
     Critique,
     DrawingAttachment,
     ExecutionResult,
+    ReasoningEffort,
     ReprojectionReport,
 )
 
 
-def build_critic_agent(model: str | Model) -> Agent[None, Critique]:
-    return Agent(model, output_type=Critique, instructions=CRITIC_INSTRUCTIONS)
+def build_critic_agent(
+    model: str | Model, *, reasoning_effort: ReasoningEffort | None = None
+) -> Agent[None, Critique]:
+    # `thinking` is pydantic-ai's provider-agnostic reasoning knob; for a Gemini critic it
+    # enables thinking before judging. When unset we pass no model_settings so the
+    # provider's own default is left untouched.
+    model_settings = ModelSettings(thinking=reasoning_effort) if reasoning_effort else None
+    return Agent(
+        model,
+        output_type=Critique,
+        instructions=CRITIC_INSTRUCTIONS,
+        model_settings=model_settings,
+    )
 
 
 def _overlay_bytes(reprojection: ReprojectionReport | None) -> bytes | None:

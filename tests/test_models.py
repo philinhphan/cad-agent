@@ -139,6 +139,7 @@ class TestRunConfig:
         monkeypatch.delenv("CAD_GEN_CRITIC_MODEL", raising=False)
         monkeypatch.delenv("CAD_GEN_VIEW_MODEL", raising=False)
         monkeypatch.delenv("CAD_GEN_REASONING_EFFORT", raising=False)
+        monkeypatch.delenv("CAD_GEN_CRITIC_REASONING_EFFORT", raising=False)
 
     def test_defaults(self):
         cfg = RunConfig()
@@ -155,10 +156,22 @@ class TestRunConfig:
         assert cfg.reproject_low_coverage == 0.80
         assert cfg.reproject_orientation_coverage == 0.55
         assert cfg.reasoning_effort is None
+        assert cfg.critic_reasoning_effort is None
 
     def test_reasoning_effort_resolves_from_env(self, monkeypatch):
         monkeypatch.setenv("CAD_GEN_REASONING_EFFORT", "high")
         assert RunConfig().reasoning_effort == "high"
+
+    def test_critic_reasoning_effort_resolves_from_env(self, monkeypatch):
+        monkeypatch.setenv("CAD_GEN_CRITIC_REASONING_EFFORT", "  Medium ")
+        cfg = RunConfig()
+        assert cfg.critic_reasoning_effort == "medium"  # normalized; independent of generator
+        assert cfg.reasoning_effort is None
+
+    def test_invalid_critic_reasoning_effort_rejected(self, monkeypatch):
+        monkeypatch.setenv("CAD_GEN_CRITIC_REASONING_EFFORT", "turbo")
+        with pytest.raises(ValidationError):
+            RunConfig()
 
     def test_reasoning_effort_normalizes_case_and_whitespace(self, monkeypatch):
         monkeypatch.setenv("CAD_GEN_REASONING_EFFORT", "  HIGH ")

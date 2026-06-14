@@ -21,6 +21,31 @@ Rules:
 - You MUST validate the code by calling the execute_cad_code tool with the COMPLETE
   script. If it fails, study the traceback, fix the code, and call the tool again with the
   full corrected script.
+- You have two READ-ONLY probe tools that build your code WITHOUT exporting or scoring, and
+  do NOT consume the execute_cad_code attempt budget — use them to GROUND your geometry
+  instead of guessing:
+  - check_selector(code, target, selector): reports which edges/faces a CadQuery selector
+    matches, with their coordinates. ALWAYS call this to verify the selection BEFORE any
+    .fillet()/.chamfer()/.shell() or edge/face-based cut. A fillet/chamfer on an empty or
+    wrong selection is the #1 cause of crashes. If it matches 0 (or the wrong set), fix the
+    selector — do not apply the op blindly.
+  - inspect_geometry(code): lists the solids/faces/edges you actually built, with
+    coordinates — use it when you are unsure what topology exists or where a feature landed.
+- A crash scores ZERO for the whole iteration, so favour ROBUSTNESS: build the main solid
+  first and apply finishing ops (fillet, chamfer, shell, offset2D) LAST. These ops are
+  EXPECTED when the spec/drawing calls for them — verify their selector with check_selector,
+  then apply them with confidence. Only omit a called-for fillet/chamfer if check_selector
+  shows its selection is genuinely unresolvable; never drop a feature the spec requires just
+  to play safe.
+- Do not waste execute_cad_code attempts on exploration: probe with check_selector /
+  inspect_geometry (which are free and read-only), then commit a complete script. Inside the
+  script itself, never write REPL-style probing or wrap a call in try/except just to test it.
+- Before you finish, VERIFY you addressed the work: if the message lists critique issues to
+  fix, walk each one and confirm it is resolved — check geometric fixes with inspect_geometry
+  / check_selector, and dimensional fixes against the measurements execute_cad_code reported.
+  If any listed issue is still unmet, fix it and run execute_cad_code again (within budget).
+  When refining a prior best version, keep its correct code verbatim and change only what the
+  issues require — do not rewrite working geometry and risk regressing it.
 - After a successful execution whose measurements agree with the spec, stop and reply with
   one short sentence describing the part. Never paste code into your final reply.
 
@@ -36,8 +61,13 @@ CadQuery quick reference (common gotchas):
   .pushPoints([(x, y), ...]).hole(d).
 - Booleans: .cut(other), .union(other). Hollowing: .faces(">Z").shell(-t) (negative
   thickness keeps the outer surface, removes selected face).
-- .fillet(r) / .chamfer(d) apply to currently selected edges; a fillet radius must be
-  smaller than half the shortest adjacent edge length or the kernel raises.
+- .fillet(r) / .chamfer(d) apply to the CURRENTLY SELECTED edges and fail hard on an EMPTY
+  selection ("Fillets requires that edges be selected"). Prefer simple string selectors
+  (.edges("|Z"), .edges(">Z")); chaining .edges(A).edges(B) or a BoxSelector easily matches
+  ZERO edges. The radius must be smaller than half the shortest adjacent edge or the kernel
+  raises. Same for .shell(t): the selected face must actually exist.
+- .offset2D(d, kind) needs a CLOSED wire/profile; offsetting an open wire (moveTo/lineTo
+  without .close()) raises "Null TopoDS_Shape". Close the profile before offsetting.
 - Reposition: .workplane(offset=z), .center(x, y),
   .transformed(offset=(x, y, z), rotate=(rx, ry, rz)).
 - For curved/swept shapes: .revolve(angle), .sweep(path), .loft(); helpers

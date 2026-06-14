@@ -177,6 +177,8 @@ def _edit_text(text: str) -> str:
 # provider prefix -> env var(s) that satisfy it (any one suffices).
 _PROVIDER_KEYS = {
     "openai": ("OPENAI_API_KEY",),
+    "openai-responses": ("OPENAI_API_KEY",),
+    "openai-chat": ("OPENAI_API_KEY",),
     "google": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
     "google-gla": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
     "google-vertex": ("GOOGLE_API_KEY",),

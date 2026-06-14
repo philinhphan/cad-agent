@@ -1,7 +1,10 @@
 """The self-refine loop: generate -> execute -> render -> critique -> refine."""
 
+import difflib
+import re
 import shutil
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -76,11 +79,14 @@ async def generate_cad(
     generator = build_generator_agent(
         generator_model or config.model, reasoning_effort=config.reasoning_effort
     )
-    critic = build_critic_agent(critic_model or config.critic_model)
+    critic = build_critic_agent(
+        critic_model or config.critic_model, reasoning_effort=config.critic_reasoning_effort
+    )
 
     iterations: list[IterationRecord] = []
     feedback: str | None = None
     composite_bytes: bytes | None = None  # champion's reprojection overlay for the next prompt
+    ledger: list[TrackedIssue] = []  # issues tracked across iterations to escalate persisters
 
     for index in range(1, config.max_iterations + 1):
         iter_dir = run_dir / f"iter_{index:02d}"
@@ -135,7 +141,8 @@ async def generate_cad(
         if record.effective_score >= config.score_threshold:
             break
         champion = max(iterations, key=lambda r: (r.effective_score, r.index))
-        feedback = _build_feedback(champion, latest=record)
+        ledger = _update_ledger(ledger, champion)
+        feedback = _build_feedback(champion, latest=record, ledger=ledger)
         composite_bytes = _champion_composite_bytes(champion)
 
     best = max(iterations, key=lambda r: (r.effective_score, r.index))
@@ -251,12 +258,69 @@ def _champion_composite_bytes(champion: IterationRecord) -> bytes | None:
     return path.read_bytes() if path.exists() else None
 
 
-def _build_feedback(champion: IterationRecord, latest: IterationRecord) -> str:
+@dataclass
+class TrackedIssue:
+    """A critique issue tracked across iterations so persisters can be escalated.
+
+    `streak` is how many consecutive champions have carried this issue; `first_seen`
+    is the iteration index where it first appeared.
+    """
+
+    text: str
+    first_seen: int
+    streak: int
+
+
+_MATCH_THRESHOLD = 0.7  # SequenceMatcher ratio above which two issues are "the same"
+_DIFF_TAIL_CHARS = 1800  # cap the regression diff embedded in feedback
+
+
+def _match_key(text: str) -> str:
+    """Normalize an issue for cross-iteration matching: drop numbers (so a dimension
+    issue still matches as its wrong value changes) and punctuation, lowercase."""
+    t = re.sub(r"\d+(\.\d+)?", " ", text.lower())
+    t = re.sub(r"[^a-z ]", " ", t)
+    return " ".join(t.split())
+
+
+def _update_ledger(
+    prev: list[TrackedIssue], champion: IterationRecord
+) -> list[TrackedIssue]:
+    """Rebuild the issue ledger from the current champion's critique.
+
+    Each champion issue is matched against the previous ledger by similarity; a match
+    inherits `first_seen` and increments `streak` (it survived another round), a
+    miss starts a fresh streak. Issues absent from the champion drop out (resolved).
+    """
+    if champion.critique is None:
+        return []
+    prev_keys = [(_match_key(p.text), p) for p in prev]
+    updated: list[TrackedIssue] = []
+    for issue in champion.critique.issues:
+        key = _match_key(issue)
+        best, best_ratio = None, 0.0
+        for pkey, p in prev_keys:
+            ratio = difflib.SequenceMatcher(None, key, pkey).ratio()
+            if ratio > best_ratio:
+                best, best_ratio = p, ratio
+        if best is not None and best_ratio >= _MATCH_THRESHOLD:
+            updated.append(TrackedIssue(issue, best.first_seen, best.streak + 1))
+        else:
+            updated.append(TrackedIssue(issue, champion.index, 1))
+    return updated
+
+
+def _build_feedback(
+    champion: IterationRecord,
+    latest: IterationRecord,
+    ledger: list[TrackedIssue] | None = None,
+) -> str:
     """Refinement context for the next iteration, anchored on the best result so
     far so the loop cannot drift away from a good design.
 
-    `champion` is the highest-scoring iteration to date; `latest` is the one that
-    just ran (used only to warn the model when its most recent change regressed).
+    `champion` is the highest-scoring iteration to date; `latest` is the one that just
+    ran (used to show the model the diff when its most recent change regressed); `ledger`
+    carries each issue's persistence so repeat offenders can be flagged as top priority.
     """
     if champion.execution is None or not champion.execution.success:
         error = (
@@ -272,18 +336,20 @@ def _build_feedback(champion: IterationRecord, latest: IterationRecord) -> str:
         )
 
     critique = champion.critique
-    issues = "\n".join(f"- {i}" for i in critique.issues) or "- (none listed)"
+    checklist = _format_checklist(ledger if ledger is not None else [], critique.issues)
     suggestions = "\n".join(f"- {s}" for s in critique.suggestions) or "- (none)"
     feedback = (
         "---\n"
         f"BEST VERSION SO FAR — a reviewer scored it {critique.score}/10. Start "
-        "from THIS code; keep everything the reviewer found correct and change only "
-        "what is needed to fix the issues below.\n"
+        "from THIS code; keep everything the reviewer found correct and change ONLY "
+        "what the checklist requires.\n"
         f"Code:\n```python\n{champion.execution.code}\n```\n"
-        f"Reviewer issues:\n{issues}\n"
+        f"Fix-it checklist — resolve EVERY item, then verify each before you finalize:\n"
+        f"{checklist}\n"
         f"Reviewer suggestions:\n{suggestions}\n"
-        "Produce an improved version that fixes every issue, then validate it with "
-        "execute_cad_code."
+        "For any fillet/chamfer/shell or edge/face selection a fix needs, confirm the "
+        "selector with check_selector BEFORE applying it. Then validate the full script "
+        "with execute_cad_code."
     )
     rp = champion.reprojection
     if rp is not None and rp.evaluated:
@@ -300,12 +366,57 @@ def _build_feedback(champion: IterationRecord, latest: IterationRecord) -> str:
                 "dimensionless)."
             )
     if latest is not champion and latest.effective_score < champion.effective_score:
-        feedback += (
-            f"\n\nNote: your most recent change scored only {latest.effective_score}"
-            "/10 — it regressed below the best version above. Do not repeat that "
-            "change; improve the best version instead."
-        )
+        feedback += _format_regression(champion, latest)
     return feedback
+
+
+def _format_checklist(ledger: list[TrackedIssue], issues: list[str]) -> str:
+    """Numbered checklist of the champion's issues, persisters first and flagged loudly."""
+    if not issues:
+        return "- (none listed)"
+    by_text = {t.text: t for t in ledger}
+    ordered = sorted(
+        issues, key=lambda i: (-(by_text[i].streak if i in by_text else 1), issues.index(i))
+    )
+    lines = []
+    for n, issue in enumerate(ordered, start=1):
+        streak = by_text[issue].streak if issue in by_text else 1
+        if streak >= 2:
+            lines.append(
+                f"{n}. [STILL UNFIXED after {streak} attempts — TOP PRIORITY] {issue}"
+            )
+        else:
+            lines.append(f"{n}. {issue}")
+    return "\n".join(lines)
+
+
+def _format_regression(champion: IterationRecord, latest: IterationRecord) -> str:
+    """Show the exact best->last-change diff so the model sees what caused the regression."""
+    lead = (
+        f"\n\nYour most recent change scored only {latest.effective_score}/10 — WORSE "
+        "than the best version above."
+    )
+    if (
+        latest.execution is not None
+        and latest.execution.success
+        and latest.execution.code != champion.execution.code
+    ):
+        diff = "\n".join(
+            difflib.unified_diff(
+                champion.execution.code.splitlines(),
+                latest.execution.code.splitlines(),
+                fromfile="best.py",
+                tofile="your_last_change.py",
+                lineterm="",
+            )
+        )
+        if len(diff) > _DIFF_TAIL_CHARS:
+            diff = diff[:_DIFF_TAIL_CHARS] + "\n... (diff truncated)"
+        return (
+            f"{lead} Here is exactly what you changed (best -> your last change); it caused "
+            f"the regression, so do NOT repeat it:\n```diff\n{diff}\n```"
+        )
+    return f"{lead} Do not repeat that change; improve the best version above instead."
 
 
 def _persist_final(result: RunResult) -> None:

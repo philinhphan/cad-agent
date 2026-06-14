@@ -4,14 +4,16 @@ Isolation here means crash/timeout/state isolation, not a security
 boundary — see README.
 """
 
+import json
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-from cad_gen.models import ExecutionResult, GeometryMetrics
+from cad_gen.models import ExecutionResult, GeometryMetrics, IntrospectionResult
 
 HARNESS = Path(__file__).parent / "harness.py"
+INTROSPECT_HARNESS = Path(__file__).parent / "introspect.py"
 
 _TRACEBACK_TAIL_CHARS = 3000
 
@@ -81,6 +83,50 @@ def run_cad_code(code: str, out_dir: Path, timeout_s: float = 60) -> ExecutionRe
         stdout=proc.stdout,
         duration_s=duration_s,
     )
+
+
+def introspect_cad_code(
+    code: str, query: dict, out_dir: Path, timeout_s: float = 30
+) -> IntrospectionResult:
+    """Probe the geometry `code` builds WITHOUT exporting (see introspect.py).
+
+    `query` is {"mode": "describe"} or
+    {"mode": "selector", "target": "edges"|"faces", "selector": "<sel>"}.
+    Returns ok=False with the traceback when the *code* fails to build; a bad
+    *selector* comes back ok=True with the diagnostic inside `data`.
+    """
+    out_dir = Path(out_dir).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    code_file = out_dir / "model.py"
+    code_file.write_text(code)
+    query_file = out_dir / "query.json"
+    query_file.write_text(json.dumps(query))
+
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(INTROSPECT_HARNESS), str(code_file), str(query_file)],
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            cwd=out_dir,
+        )
+    except subprocess.TimeoutExpired:
+        return IntrospectionResult(
+            ok=False, error=f"Introspection timed out after {timeout_s:g}s."
+        )
+
+    if proc.returncode != 0:
+        return IntrospectionResult(
+            ok=False,
+            error=proc.stderr[-_TRACEBACK_TAIL_CHARS:] or f"exit code {proc.returncode}",
+        )
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return IntrospectionResult(
+            ok=False, error=f"Introspection produced no parseable output: {proc.stdout[:500]!r}"
+        )
+    return IntrospectionResult(ok=True, data=data)
 
 
 def _check_watertight(stl_path: Path) -> bool | None:
