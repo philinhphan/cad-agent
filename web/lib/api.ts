@@ -60,6 +60,16 @@ export async function interpretDrawing(
   return jsonOrThrow(resp);
 }
 
+/** Env-resolved default models from the backend, used to seed the run form. */
+export async function getConfigDefaults(): Promise<{
+  model: string;
+  critic_model: string;
+}> {
+  return jsonOrThrow(
+    await fetch(apiUrl("/api/config/defaults"), { cache: "no-store" }),
+  );
+}
+
 export async function listRuns(): Promise<RunSummary[]> {
   return jsonOrThrow(await fetch(apiUrl("/api/runs"), { cache: "no-store" }));
 }

@@ -11,6 +11,8 @@ from cad_gen.models import (
     DrawingAttachment,
     ExecutionResult,
     GeometryMetrics,
+    IterationRecord,
+    ReprojectionReport,
     RunConfig,
 )
 from cad_gen.orchestrator import generate_cad
@@ -55,6 +57,79 @@ def stub_renderer(stl_path, out_png, metrics=None) -> Path:
     out_png = Path(out_png)
     out_png.write_bytes(b"\x89PNG\r\n\x1a\nfake")
     return out_png
+
+
+COMPOSITE_PNG = b"\x89PNG\r\n\x1a\ncomposite"
+VIEW_BOXES = {"front": [0.1, 0.6, 0.3, 0.3], "top": [0.1, 0.1, 0.3, 0.3]}
+
+
+def inert_reprojector(
+    step_path, drawing_path, out_dir, config, regions=None, timeout_s=120
+) -> ReprojectionReport:
+    """Default test stub: never spawns the real subprocess; withholds the signal."""
+    return ReprojectionReport(evaluated=False, skipped_reason="stub")
+
+
+def stub_reprojector(*, digest="REPROJECT DIGEST", composite=COMPOSITE_PNG, seen_regions=None):
+    """Evaluated stub: writes a fake composite into out_dir and returns `digest`.
+
+    Records each call's `regions` into `seen_regions` when provided."""
+
+    def _run(
+        step_path, drawing_path, out_dir, config, regions=None, timeout_s=120
+    ) -> ReprojectionReport:
+        if seen_regions is not None:
+            seen_regions.append(regions)
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        composite_path = None
+        if composite is not None:
+            composite_path = out_dir / "overlay_composite.png"
+            composite_path.write_bytes(composite)
+        return ReprojectionReport(evaluated=True, digest=digest, composite_path=composite_path)
+
+    return _run
+
+
+def scripted_view_locator(boxes: dict, calls: list | None = None) -> FunctionModel:
+    """A FunctionModel that returns `boxes` as a ViewLayout structured-output tool call."""
+
+    def fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if calls is not None:
+            calls.append(1)
+        views = [
+            {"label": k, "x": v[0], "y": v[1], "w": v[2], "h": v[3]} for k, v in boxes.items()
+        ]
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, {"views": views})])
+
+    return FunctionModel(fn)
+
+
+def _prompt_text(content) -> str:
+    """Text part of a prompt: the str itself, or the first str of a [text, *images] list."""
+    if isinstance(content, str):
+        return content
+    return next(c for c in content if isinstance(c, str))
+
+
+def _images_of(content) -> list:
+    """The BinaryContent images in a prompt (empty for a plain-string prompt)."""
+    if not isinstance(content, list):
+        return []
+    return [c for c in content if isinstance(c, BinaryContent)]
+
+
+def capturing_critic(critiques: list[dict], prompts_seen: list[str]) -> FunctionModel:
+    """Like scripted_critic but records the critic's user-prompt text per call."""
+    state = {"i": 0}
+
+    def fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        prompts_seen.append(_prompt_text(messages[0].parts[0].content))
+        args = critiques[state["i"]]
+        state["i"] += 1
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, args)])
+
+    return FunctionModel(fn)
 
 
 def scripted_generator(script: list, prompts_seen: list[str]) -> FunctionModel:
@@ -336,6 +411,8 @@ async def test_drawings_persisted_and_threaded_with_auto_interpretation(tmp_path
         critic_model=critic,
         executor=stub_executor,
         renderer=stub_renderer,
+        view_locator_model=scripted_view_locator(VIEW_BOXES),
+        reprojector=inert_reprojector,
     )
 
     # input drawing persisted under run_dir/input/ with a sanitized name
@@ -369,6 +446,8 @@ async def test_provided_interpretation_skips_interpreter(tmp_path):
         critic_model=critic,
         executor=stub_executor,
         renderer=stub_renderer,
+        view_locator_model=scripted_view_locator(VIEW_BOXES),
+        reprojector=inert_reprojector,
     )
 
     assert result.interpretation == "USER-EDITED DIMS"
@@ -400,3 +479,179 @@ async def test_text_only_prompt_stays_plain_string(tmp_path):
     assert result.interpretation is None
     assert not (result.run_dir / "input").exists()
     assert not (result.run_dir / "drawing_interpretation.md").exists()
+
+
+async def test_reproject_skipped_without_drawings(tmp_path):
+    """Text-only runs must never invoke the reprojector (it needs a drawing)."""
+    def boom_reprojector(*args, **kwargs):
+        raise AssertionError("reprojector must not run for a text-only spec")
+
+    generator = scripted_generator(
+        [("tool", GOOD_V1), ("text", "v1"), ("tool", GOOD_V2), ("text", "v2")], []
+    )
+    critic = scripted_critic([critique_args(5, ["x"]), critique_args(9, [])], [])
+    config = RunConfig(max_iterations=2, score_threshold=8, out_dir=tmp_path / "runs")
+
+    result = await generate_cad(
+        "a plain cube",
+        config,
+        generator_model=generator,
+        critic_model=critic,
+        executor=stub_executor,
+        renderer=stub_renderer,
+        reprojector=boom_reprojector,
+    )
+
+    assert all(rec.reprojection is None for rec in result.iterations)
+
+
+async def test_reproject_digest_reaches_critic_and_generator(tmp_path):
+    """Evaluated reprojection: digest grounds the critic, and the BEST version's overlay
+    composite + digest flow into the next generator iteration."""
+    first_contents: list = []
+    images: list = []
+    critic_prompts: list[str] = []
+    generator = capturing_generator(
+        [("tool", GOOD_V1), ("text", "v1"), ("tool", GOOD_V2), ("text", "v2")],
+        first_contents,
+        images,
+    )
+    critic = capturing_critic(
+        [critique_args(5, ["hole too small"]), critique_args(9, [])], critic_prompts
+    )
+    drawings = [DrawingAttachment(filename="d.png", media_type="image/png", data=PNG)]
+    config = RunConfig(max_iterations=2, score_threshold=8, out_dir=tmp_path / "runs")
+
+    await generate_cad(
+        "spec",
+        config,
+        drawings=drawings,
+        interpretation="DIMS",  # skip the interpreter
+        generator_model=generator,
+        critic_model=critic,
+        executor=stub_executor,
+        renderer=stub_renderer,
+        view_locator_model=scripted_view_locator(VIEW_BOXES),
+        reprojector=stub_reprojector(),
+    )
+
+    # the digest grounds the critic (it ran before the critique)
+    assert any("REPROJECT DIGEST" in p for p in critic_prompts)
+    # iteration 1's prompt had only the drawing (no champion overlay yet)
+    assert len(_images_of(first_contents[0])) == 1
+    # iteration 2's prompt leads with the overlay composite, then the original drawing,
+    # and carries the digest text in its feedback
+    imgs2 = _images_of(first_contents[1])
+    assert len(imgs2) == 2 and imgs2[0].data == COMPOSITE_PNG
+    assert "REPROJECT DIGEST" in _prompt_text(first_contents[1])
+
+
+async def test_reproject_not_evaluated_is_withheld(tmp_path):
+    """When the reprojection is not evaluated, nothing leaks to critic or generator and
+    the score path is unchanged (advisory)."""
+    first_contents: list = []
+    images: list = []
+    critic_prompts: list[str] = []
+    generator = capturing_generator(
+        [("tool", GOOD_V1), ("text", "v1"), ("tool", GOOD_V2), ("text", "v2")],
+        first_contents,
+        images,
+    )
+    critic = capturing_critic(
+        [critique_args(5, ["x"]), critique_args(9, [])], critic_prompts
+    )
+    drawings = [DrawingAttachment(filename="d.png", media_type="image/png", data=PNG)]
+    config = RunConfig(max_iterations=2, score_threshold=8, out_dir=tmp_path / "runs")
+
+    result = await generate_cad(
+        "spec",
+        config,
+        drawings=drawings,
+        interpretation="DIMS",
+        generator_model=generator,
+        critic_model=critic,
+        executor=stub_executor,
+        renderer=stub_renderer,
+        view_locator_model=scripted_view_locator(VIEW_BOXES),
+        reprojector=inert_reprojector,  # evaluated=False
+    )
+
+    assert not any("REPROJECT" in p for p in critic_prompts)
+    assert len(_images_of(first_contents[1])) == 1  # only the drawing, no composite
+    assert result.best.critique.score == 9  # champion still chosen by critique score
+
+
+async def test_reprojection_persisted_in_iteration_json(tmp_path):
+    generator = scripted_generator([("tool", GOOD_V1), ("text", "v1")], [])
+    critic = scripted_critic([critique_args(9, [])], [])
+    drawings = [DrawingAttachment(filename="d.png", media_type="image/png", data=PNG)]
+    config = RunConfig(max_iterations=1, score_threshold=8, out_dir=tmp_path / "runs")
+
+    result = await generate_cad(
+        "spec",
+        config,
+        drawings=drawings,
+        interpretation="DIMS",
+        generator_model=generator,
+        critic_model=critic,
+        executor=stub_executor,
+        renderer=stub_renderer,
+        view_locator_model=scripted_view_locator(VIEW_BOXES),
+        reprojector=stub_reprojector(),
+    )
+
+    raw = (result.run_dir / "iter_01" / "iteration.json").read_text()
+    record = IterationRecord.model_validate_json(raw)
+    assert record.reprojection is not None
+    assert record.reprojection.evaluated is True
+    assert "REPROJECT DIGEST" in record.reprojection.digest
+
+
+async def test_view_locator_runs_once_and_threads_regions(tmp_path):
+    """The VLM view-locator runs ONCE per run (the layout is drawing-level) and its boxes
+    reach every iteration's reprojection call."""
+    seen_regions: list = []
+    locator_calls: list = []
+    generator = scripted_generator(
+        [("tool", GOOD_V1), ("text", "v1"), ("tool", GOOD_V2), ("text", "v2")], []
+    )
+    critic = scripted_critic([critique_args(5, ["x"]), critique_args(9, [])], [])
+    drawings = [DrawingAttachment(filename="d.png", media_type="image/png", data=PNG)]
+    config = RunConfig(max_iterations=2, score_threshold=8, out_dir=tmp_path / "runs")
+
+    result = await generate_cad(
+        "spec",
+        config,
+        drawings=drawings,
+        interpretation="DIMS",
+        generator_model=generator,
+        critic_model=critic,
+        executor=stub_executor,
+        renderer=stub_renderer,
+        view_locator_model=scripted_view_locator(VIEW_BOXES, locator_calls),
+        reprojector=stub_reprojector(seen_regions=seen_regions),
+    )
+
+    assert len(locator_calls) == 1  # computed once, not per iteration
+    assert len(seen_regions) == 2  # but threaded into every iteration
+    assert seen_regions[0] == {"front": [0.1, 0.6, 0.3, 0.3], "top": [0.1, 0.1, 0.3, 0.3]}
+    assert (result.run_dir / "view_layout.json").exists()
+
+
+async def test_view_locator_not_called_without_drawings(tmp_path):
+    def boom(messages, info):
+        raise AssertionError("view locator must not run for a text-only spec")
+
+    generator = scripted_generator([("tool", GOOD_V1), ("text", "v1")], [])
+    critic = scripted_critic([critique_args(9, [])], [])
+    config = RunConfig(max_iterations=1, out_dir=tmp_path / "runs")
+
+    await generate_cad(
+        "a plain cube",
+        config,
+        generator_model=generator,
+        critic_model=critic,
+        executor=stub_executor,
+        renderer=stub_renderer,
+        view_locator_model=FunctionModel(boom),
+    )  # reaching here without boom firing = pass

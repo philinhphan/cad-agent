@@ -6,6 +6,8 @@ from cad_gen.models import (
     ExecutionResult,
     GeometryMetrics,
     IterationRecord,
+    ReprojectionReport,
+    ReprojectionView,
     RunConfig,
     RunResult,
 )
@@ -17,6 +19,8 @@ __all__ = [
     "ExecutionResult",
     "GeometryMetrics",
     "IterationRecord",
+    "ReprojectionReport",
+    "ReprojectionView",
     "RunConfig",
     "RunResult",
     "generate_cad",

@@ -132,6 +132,12 @@ def _strip_paths(record_data: dict) -> dict:
         record_data["execution"].pop("stl_path", None)
         record_data["execution"].pop("step_path", None)
     record_data.pop("render_path", None)
+    reprojection = record_data.get("reprojection")
+    if reprojection:
+        reprojection.pop("composite_path", None)
+        for view in (reprojection.get("views") or {}).values():
+            if isinstance(view, dict):
+                view.pop("overlay_path", None)
     return record_data
 
 

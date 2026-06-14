@@ -8,6 +8,8 @@ from cad_gen.models import (
     ExecutionResult,
     GeometryMetrics,
     IterationRecord,
+    ReprojectionReport,
+    ReprojectionView,
     RunConfig,
     RunResult,
 )
@@ -95,17 +97,62 @@ class TestIterationRecord:
         rec = IterationRecord(index=2, execution=make_execution(), render_path=Path("/tmp/v.png"))
         assert IterationRecord.model_validate_json(rec.model_dump_json()) == rec
 
+    def test_reprojection_never_changes_effective_score(self):
+        # The reprojection signal is advisory: it must not influence the score.
+        rec = IterationRecord(
+            index=1,
+            execution=make_execution(),
+            critique=Critique(
+                matches_spec=False, score=6, issues=[], suggestions=[], summary="s"
+            ),
+            reprojection=ReprojectionReport(evaluated=True, passed=False, digest="d"),
+        )
+        assert rec.effective_score == 6
+
+    def test_round_trips_with_reprojection(self):
+        rec = IterationRecord(
+            index=2,
+            execution=make_execution(),
+            reprojection=ReprojectionReport(
+                evaluated=True,
+                views_found=2,
+                digest="front view: 90% reproduced",
+                views={
+                    "front": ReprojectionView(
+                        coverage=0.9, chamfer_pct=1.0, aspect_ok=True,
+                        aspect_rel_err=0.0, aspect_signed=0.0,
+                        overlay_path=Path("/tmp/overlay_front.png"),
+                    )
+                },
+                composite_path=Path("/tmp/overlay_composite.png"),
+            ),
+        )
+        assert IterationRecord.model_validate_json(rec.model_dump_json()) == rec
+
 
 class TestRunConfig:
+    @pytest.fixture(autouse=True)
+    def _clear_model_env(self, monkeypatch):
+        # Defaults resolve from the environment, so isolate these tests from any
+        # CAD_GEN_MODEL / CAD_GEN_CRITIC_MODEL the developer happens to have set.
+        monkeypatch.delenv("CAD_GEN_MODEL", raising=False)
+        monkeypatch.delenv("CAD_GEN_CRITIC_MODEL", raising=False)
+        monkeypatch.delenv("CAD_GEN_VIEW_MODEL", raising=False)
+
     def test_defaults(self):
         cfg = RunConfig()
         assert cfg.model == "openai:gpt-5.5"
         assert cfg.critic_model == "google:gemini-3.5-flash"
+        assert cfg.view_model == "google:gemini-3.5-flash"
         assert cfg.max_iterations == 5
         assert cfg.score_threshold == 8
         assert cfg.exec_timeout_s == 60
         assert cfg.max_exec_attempts_per_iteration == 4
         assert cfg.out_dir == Path("runs")
+        assert cfg.reproject is True
+        assert cfg.reproject_timeout_s == 120
+        assert cfg.reproject_low_coverage == 0.80
+        assert cfg.reproject_orientation_coverage == 0.55
 
     def test_critic_model_defaults_independently_of_generator(self):
         # The critic has its own default (vision model) — it does NOT inherit --model.
@@ -115,6 +162,25 @@ class TestRunConfig:
     def test_critic_model_override_wins(self):
         cfg = RunConfig(model="openai:gpt-5.5", critic_model="openai:gpt-5-mini")
         assert cfg.critic_model == "openai:gpt-5-mini"
+
+    def test_models_resolve_from_env(self, monkeypatch):
+        monkeypatch.setenv("CAD_GEN_MODEL", "anthropic:claude-opus-4-8")
+        monkeypatch.setenv("CAD_GEN_CRITIC_MODEL", "anthropic:claude-opus-4-8")
+        cfg = RunConfig()
+        assert cfg.model == "anthropic:claude-opus-4-8"
+        assert cfg.critic_model == "anthropic:claude-opus-4-8"
+
+    def test_view_model_resolves_from_env(self, monkeypatch):
+        monkeypatch.setenv("CAD_GEN_VIEW_MODEL", "anthropic:claude-opus-4-8")
+        assert RunConfig().view_model == "anthropic:claude-opus-4-8"
+
+    def test_explicit_values_override_env(self, monkeypatch):
+        # A flag / request-body value beats the env var (precedence: explicit > env > default).
+        monkeypatch.setenv("CAD_GEN_MODEL", "anthropic:claude-opus-4-8")
+        monkeypatch.setenv("CAD_GEN_CRITIC_MODEL", "anthropic:claude-opus-4-8")
+        cfg = RunConfig(model="openai:gpt-5.5", critic_model="google:gemini-3.5-flash")
+        assert cfg.model == "openai:gpt-5.5"
+        assert cfg.critic_model == "google:gemini-3.5-flash"
 
 
 class TestRunResult:

@@ -1,5 +1,6 @@
 """Pydantic schemas shared across the sandbox, agents, and orchestrator."""
 
+import os
 from pathlib import Path
 
 from pydantic import BaseModel, Field, model_validator
@@ -54,6 +55,39 @@ class Critique(BaseModel):
     summary: str
 
 
+class ReprojectionView(BaseModel):
+    """Per-view geometric overlap of the reprojected STEP against one drawing view."""
+
+    coverage: float  # recall: fraction of this view's drawing lines reproduced
+    chamfer_pct: float
+    aspect_ok: bool
+    aspect_rel_err: float
+    aspect_signed: float  # + => part too wide for its height in this view, - => too tall
+    overlay_path: Path | None = None  # per-view colour overlay PNG (absolute fs path)
+
+
+class ReprojectionReport(BaseModel):
+    """Adapter-built, LLM-facing summary of a deterministic reproject_check run.
+
+    ADVISORY ONLY: this never affects `effective_score`, accept logic, or champion
+    choice. `evaluated=False` means the drawing could not be parsed (no views) or all
+    views looked orientation/scale-mismatched — the signal is withheld rather than used
+    to penalise the model. The colour overlay is a *locator* (where lines are missing or
+    extra), not a ruler: it is dimensionless, so dimensions must be read off the original
+    drawing, never estimated from the overlay.
+    """
+
+    evaluated: bool
+    passed: bool = False  # mirrors report.overall.pass; informational only
+    views_found: int = 0
+    mean_chamfer_pct: float | None = None
+    views: dict[str, ReprojectionView] = {}  # only located views (front/top/side)
+    digest: str = ""  # compact text block fed to the critic (no images)
+    interpretation: str = ""  # one global-vs-local interpretation line
+    composite_path: Path | None = None  # labelled multi-view overlay PNG for the generator
+    skipped_reason: str | None = None  # why evaluated=False (logging/debug only)
+
+
 class IterationRecord(BaseModel):
     """Everything produced by one outer self-refine iteration."""
 
@@ -61,6 +95,7 @@ class IterationRecord(BaseModel):
     execution: ExecutionResult | None = None
     render_path: Path | None = None
     critique: Critique | None = None
+    reprojection: ReprojectionReport | None = None
     summary: str = ""
 
     @property
@@ -71,18 +106,38 @@ class IterationRecord(BaseModel):
 class RunConfig(BaseModel):
     """Tunable parameters of a generation run."""
 
-    model: str = DEFAULT_MODEL
+    # Defaults resolve from the environment at instantiation time (after
+    # load_dotenv runs) so CAD_GEN_MODEL / CAD_GEN_CRITIC_MODEL drive both the
+    # CLI and the web backend. Precedence: explicit value -> env var -> constant.
+    model: str = Field(
+        default_factory=lambda: os.environ.get("CAD_GEN_MODEL") or DEFAULT_MODEL
+    )
     critic_model: str | None = None
+    # Vision model that locates the drawing's orthographic views for the reprojection
+    # check (provider:model). Defaults to the vision-critic default; CAD_GEN_VIEW_MODEL
+    # overrides. Only used in drawing mode.
+    view_model: str = Field(
+        default_factory=lambda: os.environ.get("CAD_GEN_VIEW_MODEL") or DEFAULT_CRITIC_MODEL
+    )
     max_iterations: int = 5
     score_threshold: int = 8
     exec_timeout_s: float = 60
     max_exec_attempts_per_iteration: int = 4
     out_dir: Path = Path("runs")
+    # Deterministic reprojection check (drawing mode only). Advisory: it never gates
+    # the score. The two coverage knobs only shape the wording / withholding heuristic,
+    # they are NOT pass/fail thresholds.
+    reproject: bool = True
+    reproject_timeout_s: float = 120
+    reproject_low_coverage: float = 0.80  # below this a view reads as "geometry missing"
+    reproject_orientation_coverage: float = 0.55  # all views below => likely orientation, withhold
 
     @model_validator(mode="after")
     def _default_critic_model(self) -> "RunConfig":
         if self.critic_model is None:
-            self.critic_model = DEFAULT_CRITIC_MODEL
+            self.critic_model = (
+                os.environ.get("CAD_GEN_CRITIC_MODEL") or DEFAULT_CRITIC_MODEL
+            )
         return self
 
 

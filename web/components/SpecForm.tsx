@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion } from "motion/react";
-import { interpretDrawing, startRun } from "@/lib/api";
+import { getConfigDefaults, interpretDrawing, startRun } from "@/lib/api";
 import type { RunConfigInput } from "@/lib/types";
 
 const EXAMPLES = [
@@ -12,13 +12,18 @@ const EXAMPLES = [
   "a hexagonal nut, 19mm across flats, 8mm thick, with a 10.5mm through-hole",
 ];
 
+// model is seeded from the backend's env-resolved defaults on mount (see the
+// useEffect below); empty until then, and an empty model field is omitted from
+// the request so the server's default applies.
 const DEFAULTS = {
-  model: "openai:gpt-5.5",
+  model: "",
   critic_model: "",
   max_iterations: 5,
   score_threshold: 8,
   exec_timeout_s: 60,
 };
+
+const CRITIC_FALLBACK = "google:gemini-3.5-flash";
 
 const MAX_FILES = 5;
 const ACCEPT = ["image/png", "image/jpeg"];
@@ -27,6 +32,7 @@ export function SpecForm() {
   const router = useRouter();
   const [spec, setSpec] = useState("");
   const [cfg, setCfg] = useState(DEFAULTS);
+  const [criticDefault, setCriticDefault] = useState(CRITIC_FALLBACK);
   const [advanced, setAdvanced] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -38,9 +44,29 @@ export function SpecForm() {
   const [interpreting, setInterpreting] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Seed the model fields from the backend's env-resolved defaults
+  // (CAD_GEN_MODEL / CAD_GEN_CRITIC_MODEL). Falls back to the built-ins if the
+  // backend is unreachable. Won't clobber a model the user already typed.
+  useEffect(() => {
+    let cancelled = false;
+    getConfigDefaults()
+      .then((d) => {
+        if (cancelled) return;
+        if (d.critic_model) setCriticDefault(d.critic_model);
+        setCfg((prev) => (prev.model ? prev : { ...prev, model: d.model }));
+      })
+      .catch(() => {
+        /* backend down — keep built-in placeholder defaults */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   function buildConfig(): RunConfigInput {
     return {
-      model: cfg.model,
+      // empty model -> omit so the server's env-resolved default applies
+      model: cfg.model.trim() || undefined,
       critic_model: cfg.critic_model.trim() || null,
       max_iterations: cfg.max_iterations,
       score_threshold: cfg.score_threshold,
@@ -237,7 +263,7 @@ export function SpecForm() {
           />
           <TextField
             label="critic model"
-            placeholder="(default: google:gemini-3.5-flash)"
+            placeholder={`(default: ${criticDefault})`}
             value={cfg.critic_model}
             onChange={(v) => setCfg({ ...cfg, critic_model: v })}
           />

@@ -60,9 +60,10 @@ def generate(
     ),
 ) -> None:
     """Generate CAD geometry from a text spec and/or technical drawing via a self-refine loop."""
+    # load_dotenv must run before RunConfig is built below — RunConfig resolves
+    # CAD_GEN_MODEL / CAD_GEN_CRITIC_MODEL from the environment; --model /
+    # --critic-model flags (set here) override that.
     load_dotenv(Path.cwd() / ".env")
-    model = model or os.environ.get("CAD_GEN_MODEL")
-    critic_model = critic_model or os.environ.get("CAD_GEN_CRITIC_MODEL")
 
     spec = spec or ""
     if not spec.strip() and not drawing:
@@ -184,7 +185,9 @@ _PROVIDER_KEYS = {
 
 
 def _require_api_key(config: RunConfig) -> None:
-    providers = {m.split(":", 1)[0] for m in (config.model, config.critic_model)}
+    providers = {
+        m.split(":", 1)[0] for m in (config.model, config.critic_model, config.view_model)
+    }
     missing = [
         (p, keys)
         for p in providers

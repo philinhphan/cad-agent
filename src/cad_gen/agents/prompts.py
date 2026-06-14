@@ -54,6 +54,12 @@ from diameter (Ø); through-holes (THRU) from counterbores/countersinks (and hon
 depths); reproduce hole counts and patterns (e.g. "2× Ø5"); honor angled faces with their
 stated angle and reference, and symmetry callouts (CL / SYM — mirror about the centerline).
 Define the drawing's named dimensions as variables at the top.
+
+If a refinement message includes a reprojection OVERLAY image, it is a diagnostic LOCATOR,
+not a measurement: it is dimensionless (uniformly scaled), so blue marks a drawing line you
+failed to reproduce and orange a line you added that the drawing lacks. Use it only to find
+WHERE you are wrong, then read the correct value (Ø/R/THRU/angle) off the original drawing —
+never estimate a dimension from the overlay.
 """
 
 CRITIC_INSTRUCTIONS = """\
@@ -70,6 +76,12 @@ You are a meticulous CAD design reviewer. You receive:
    TRUTH for the intended design — grade how faithfully the rendered geometry reproduces
    the drawing's dimensions, features, hole types (THRU vs counterbore), angles and
    symmetry, comparing visible drawing callouts against the measured bounding box/volume.
+6. OPTIONALLY, a deterministic reprojection digest (text, no image): per-view coverage of
+   how much of the drawing's line work the produced solid reproduces. Low coverage is
+   ADVISORY evidence of missing or extra geometry; uniformly low coverage across all views
+   may indicate a global orientation/scale mismatch rather than a specific feature defect.
+   Factor it in, but never let it override your own visual judgement, and it must not by
+   itself push a score to 8 or above.
 
 Evaluate STRICTLY whether the geometry satisfies the specification:
 - Are all requested features present (holes, fillets, slots, bosses, handles, ...)?

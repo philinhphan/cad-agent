@@ -87,6 +87,16 @@ def create_app(
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    @app.get("/api/config/defaults")
+    def config_defaults() -> dict[str, str]:
+        """Env-resolved default models so the frontend can seed its form.
+
+        RunConfig() reads CAD_GEN_MODEL / CAD_GEN_CRITIC_MODEL (loaded above via
+        load_dotenv), falling back to the built-in defaults when unset.
+        """
+        cfg = RunConfig()
+        return {"model": cfg.model, "critic_model": cfg.critic_model or ""}
+
     @app.post("/api/drawings/interpret")
     async def interpret(
         spec: str = Form(""),

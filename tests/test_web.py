@@ -15,6 +15,8 @@ from cad_gen.models import (
     ExecutionResult,
     GeometryMetrics,
     IterationRecord,
+    ReprojectionReport,
+    ReprojectionView,
     RunResult,
 )
 from cad_gen.web.server import create_app
@@ -38,6 +40,32 @@ def test_cors_headers_present_for_allowed_origin():
     resp = client.get("/api/health", headers={"Origin": "http://localhost:3000"})
 
     assert resp.headers["access-control-allow-origin"] == "http://localhost:3000"
+
+
+def test_config_defaults_falls_back_to_builtins(monkeypatch):
+    monkeypatch.delenv("CAD_GEN_MODEL", raising=False)
+    monkeypatch.delenv("CAD_GEN_CRITIC_MODEL", raising=False)
+    client = TestClient(create_app())
+
+    body = client.get("/api/config/defaults").json()
+
+    assert body == {
+        "model": "openai:gpt-5.5",
+        "critic_model": "google:gemini-3.5-flash",
+    }
+
+
+def test_config_defaults_reflect_env(monkeypatch):
+    monkeypatch.setenv("CAD_GEN_MODEL", "anthropic:claude-opus-4-8")
+    monkeypatch.setenv("CAD_GEN_CRITIC_MODEL", "anthropic:claude-opus-4-8")
+    client = TestClient(create_app())
+
+    body = client.get("/api/config/defaults").json()
+
+    assert body == {
+        "model": "anthropic:claude-opus-4-8",
+        "critic_model": "anthropic:claude-opus-4-8",
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -418,3 +446,36 @@ def test_input_artifact_traversal_rejected(tmp_path):
 
     with pytest.raises(HTTPException):
         input_artifact("somerun", "../../etc/passwd", tmp_path)
+
+
+def test_strip_paths_removes_reprojection_fs_paths():
+    """Absolute overlay/composite paths must not leak to the browser; the digest stays."""
+    from cad_gen.web.runs import _strip_paths
+
+    rec = IterationRecord(
+        index=1,
+        execution=ExecutionResult(
+            success=True,
+            code="x",
+            stl_path=Path("/abs/model.stl"),
+            step_path=Path("/abs/model.step"),
+            duration_s=0.1,
+        ),
+        reprojection=ReprojectionReport(
+            evaluated=True,
+            digest="front view: 90% reproduced",
+            views={
+                "front": ReprojectionView(
+                    coverage=0.9, chamfer_pct=1.0, aspect_ok=True, aspect_rel_err=0.0,
+                    aspect_signed=0.0, overlay_path=Path("/abs/overlay_front.png"),
+                )
+            },
+            composite_path=Path("/abs/overlay_composite.png"),
+        ),
+    )
+
+    data = _strip_paths(rec.model_dump(mode="json"))
+
+    assert "composite_path" not in data["reprojection"]
+    assert "overlay_path" not in data["reprojection"]["views"]["front"]
+    assert data["reprojection"]["digest"] == "front view: 90% reproduced"

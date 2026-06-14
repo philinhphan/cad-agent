@@ -18,6 +18,12 @@ from cad_gen.agents.generator import (
 from cad_gen.imaging import drawing_filename
 from cad_gen.models import DrawingAttachment, IterationRecord, RunConfig, RunResult
 from cad_gen.rendering.renderer import render_views
+from cad_gen.reproject import (
+    ReprojectorFn,
+    build_view_locator_agent,
+    locate_drawing_views,
+    reproject_report,
+)
 from cad_gen.sandbox.executor import run_cad_code
 
 RendererFn = Callable[..., Path]
@@ -33,8 +39,10 @@ async def generate_cad(
     generator_model: str | Model | None = None,
     critic_model: str | Model | None = None,
     interpreter_model: str | Model | None = None,
+    view_locator_model: str | Model | None = None,
     executor: ExecutorFn = run_cad_code,
     renderer: RendererFn = render_views,
+    reprojector: ReprojectorFn = reproject_report,
     on_iteration: IterationCallback | None = None,
 ) -> RunResult:
     """Run the full self-refine loop for `spec`; artifacts land under config.out_dir.
@@ -57,11 +65,20 @@ async def generate_cad(
     if interpretation is not None:
         (run_dir / "drawing_interpretation.md").write_text(interpretation)
 
+    # Locate the drawing's orthographic views ONCE (advisory; drives the per-iteration
+    # reprojection check). A VLM proposes the boxes; the deterministic overlap judges.
+    view_regions: dict[str, list[float]] | None = None
+    if drawings and config.reproject:
+        view_regions = await _locate_views(
+            view_locator_model or config.view_model, drawings[0], run_dir
+        )
+
     generator = build_generator_agent(generator_model or config.model)
     critic = build_critic_agent(critic_model or config.critic_model)
 
     iterations: list[IterationRecord] = []
     feedback: str | None = None
+    composite_bytes: bytes | None = None  # champion's reprojection overlay for the next prompt
 
     for index in range(1, config.max_iterations + 1):
         iter_dir = run_dir / f"iter_{index:02d}"
@@ -73,7 +90,7 @@ async def generate_cad(
             executor=executor,
         )
 
-        prompt = _build_prompt(spec, feedback, interpretation, drawings)
+        prompt = _build_prompt(spec, feedback, interpretation, drawings, composite_bytes)
         gen_result = await generator.run(prompt, deps=workspace)
 
         execution = workspace.last_success or (
@@ -87,12 +104,25 @@ async def generate_cad(
             record.render_path = renderer(
                 execution.stl_path, iter_dir / "views.png", execution.metrics
             )
+            # Deterministic reprojection vs. the drawing (drawing mode only). Runs BEFORE
+            # the critic so its digest can ground the critique; isolated in a subprocess
+            # and degrades to evaluated=False, so it can never block the critic.
+            if config.reproject and drawings and execution.step_path is not None:
+                record.reprojection = reprojector(
+                    execution.step_path,
+                    run_dir / "input" / drawing_names[0],  # reproject expects one ortho sheet
+                    iter_dir / "reproject",
+                    config,
+                    regions=view_regions,
+                    timeout_s=config.reproject_timeout_s,
+                )
             record.critique = await run_critique(
                 critic,
                 spec=spec,
                 execution=execution,
                 render_path=record.render_path,
                 drawings=drawings,
+                reprojection=record.reprojection,
             )
 
         (iter_dir / "iteration.json").write_text(record.model_dump_json(indent=2))
@@ -104,6 +134,7 @@ async def generate_cad(
             break
         champion = max(iterations, key=lambda r: (r.effective_score, r.index))
         feedback = _build_feedback(champion, latest=record)
+        composite_bytes = _champion_composite_bytes(champion)
 
     best = max(iterations, key=lambda r: (r.effective_score, r.index))
     result = RunResult(
@@ -151,15 +182,38 @@ def _persist_drawings(run_dir: Path, drawings: list[DrawingAttachment]) -> list[
     return names
 
 
+async def _locate_views(
+    model: str | Model, drawing: DrawingAttachment, run_dir: Path
+) -> dict[str, list[float]] | None:
+    """VLM-locate the drawing's orthographic views; persist + return normalized regions.
+
+    Any failure (no API key, bad output) degrades to ``None`` so the reprojection check
+    simply withholds — it can never corrupt the run. The deterministic overlap score is
+    what ultimately judges the boxes.
+    """
+    try:
+        agent = build_view_locator_agent(model)
+        layout = await locate_drawing_views(agent, drawing=drawing)
+    except Exception:
+        return None
+    (run_dir / "view_layout.json").write_text(layout.model_dump_json(indent=2))
+    if not layout.views:
+        return None
+    return {v.label: [v.x, v.y, v.w, v.h] for v in layout.views}
+
+
 def _build_prompt(
     spec: str,
     feedback: str | None,
     interpretation: str | None,
     drawings: list[DrawingAttachment],
+    reproject_composite: bytes | None = None,
 ) -> str | list:
     """Generator prompt. Plain str for text-only runs (byte-identical to before);
     a [text, *images] list when drawings are present so the model re-reads the
-    authoritative drawing on every iteration."""
+    authoritative drawing on every iteration. When a champion reprojection overlay is
+    available it leads the image list as a diagnostic locator (only ever set in drawing
+    mode, so the text-only path is untouched)."""
     text = spec if feedback is None else f"{spec}\n\n{feedback}"
     if interpretation:
         text += (
@@ -169,11 +223,30 @@ def _build_prompt(
         )
     if not drawings:
         return text
+    if reproject_composite is not None:
+        text += (
+            "\n\n(The FIRST attached image is a reprojection overlay — a diagnostic "
+            "locator of where your previous best version differs from the drawing: blue = "
+            "a drawing line you did not reproduce, orange = a line you added that the "
+            "drawing lacks. Use it only to find WHERE to fix; the remaining image(s) are "
+            "the authoritative original drawing(s) — read all dimensions from them.)"
+        )
     content: list = [text]
+    if reproject_composite is not None:
+        content.append(BinaryContent(data=reproject_composite, media_type="image/png"))
     content.extend(
         BinaryContent(data=d.data, media_type=d.media_type) for d in drawings
     )
     return content
+
+
+def _champion_composite_bytes(champion: IterationRecord) -> bytes | None:
+    """Bytes of the champion's reprojection overlay composite, if one was produced."""
+    rp = champion.reprojection
+    if rp is None or not rp.evaluated or rp.composite_path is None:
+        return None
+    path = Path(rp.composite_path)
+    return path.read_bytes() if path.exists() else None
 
 
 def _build_feedback(champion: IterationRecord, latest: IterationRecord) -> str:
@@ -210,6 +283,20 @@ def _build_feedback(champion: IterationRecord, latest: IterationRecord) -> str:
         "Produce an improved version that fixes every issue, then validate it with "
         "execute_cad_code."
     )
+    rp = champion.reprojection
+    if rp is not None and rp.evaluated:
+        feedback += (
+            "\n\n## Independent geometric reprojection of the BEST version "
+            "(deterministic, advisory):\n"
+            f"{rp.digest}"
+        )
+        if rp.composite_path is not None:
+            feedback += (
+                "\nAn overlay image is attached. Use it ONLY to locate where lines are "
+                "missing (blue) or extra (orange); then read the correct dimension off the "
+                "ORIGINAL drawing — never estimate sizes from the overlay (it is "
+                "dimensionless)."
+            )
     if latest is not champion and latest.effective_score < champion.effective_score:
         feedback += (
             f"\n\nNote: your most recent change scored only {latest.effective_score}"

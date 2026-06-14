@@ -3,6 +3,7 @@
 
 # Generated run artifacts
 runs/
+out_reproj_check/        # reproject drawing-eval output (cad_gen.reproject.eval_drawings)
 
 # Python
 __pycache__/
