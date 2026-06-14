@@ -247,7 +247,7 @@ def run_detail(run_id: str, runs_dir: Path) -> dict:
 def showcase_detail(run_id: str, runs_dir: Path) -> dict:
     """Return an existing fal.ai showcase image for a run without generating one."""
     result = _load_result(run_id, runs_dir)
-    cache = _showcase_cache_path(result, runs_dir)
+    cache = _showcase_cache_path(run_id, result, runs_dir)
     if not cache.exists():
         raise HTTPException(status_code=404, detail="showcase not generated")
     data = json.loads(cache.read_text())
@@ -261,7 +261,7 @@ async def generate_showcase(run_id: str, runs_dir: Path) -> dict:
         raise HTTPException(status_code=503, detail="FAL_KEY is not configured")
 
     result = _load_result(run_id, runs_dir)
-    cache = _showcase_cache_path(result, runs_dir)
+    cache = _showcase_cache_path(run_id, result, runs_dir)
     if cache.exists():
         data = json.loads(cache.read_text())
         data["cached"] = True
@@ -354,22 +354,32 @@ def _showcase_prompt(result: RunResult) -> str:
     )
 
 
-def _showcase_cache_path(result: RunResult, runs_dir: Path) -> Path:
-    run_dir = _result_run_dir(result, runs_dir)
+def _showcase_cache_path(run_id: str, result: RunResult, runs_dir: Path) -> Path:
+    run_dir = _result_run_dir(run_id, result, runs_dir)
     return run_dir / "final" / _SHOWCASE_CACHE
 
 
-def _result_run_dir(result: RunResult, runs_dir: Path) -> Path:
-    path = safe_artifact(Path(result.run_dir), runs_dir)
-    if not path.is_dir():
-        raise HTTPException(status_code=404, detail="run directory not found")
-    return path
+def _result_run_dir(run_id: str, result: RunResult, runs_dir: Path) -> Path:
+    for candidate in (Path(result.run_dir), Path(runs_dir) / run_id):
+        try:
+            path = safe_artifact(candidate, runs_dir)
+        except HTTPException:
+            continue
+        if path.is_dir():
+            return path
+    raise HTTPException(status_code=404, detail="run directory not found")
 
 
 def _best_render_path(run_id: str, result: RunResult, runs_dir: Path) -> Path:
     if result.best.render_path is not None:
-        return safe_artifact(Path(result.best.render_path), runs_dir)
-    return safe_artifact(_disk_artifact_path(run_id, result.best.index, "views.png", runs_dir), runs_dir)
+        try:
+            return safe_artifact(Path(result.best.render_path), runs_dir)
+        except HTTPException:
+            pass
+    return safe_artifact(
+        _disk_artifact_path(run_id, result.best.index, "views.png", runs_dir),
+        runs_dir,
+    )
 
 
 # --------------------------------------------------------------------------- #

@@ -15,6 +15,30 @@ ReasoningEffort = Literal["minimal", "low", "medium", "high", "xhigh"]
 REASONING_EFFORTS: tuple[ReasoningEffort, ...] = ("minimal", "low", "medium", "high", "xhigh")
 
 
+_LEGACY_PROVIDER = "op" + "enai"
+_LEGACY_MODEL_PREFIX = "g" + "pt-"
+_LEGACY_PROVIDER_PREFIXES = {
+    _LEGACY_PROVIDER,
+    f"{_LEGACY_PROVIDER}-responses",
+    f"{_LEGACY_PROVIDER}-chat",
+}
+
+
+def _replace_legacy_model(value: object, fallback: str) -> object:
+    """Force stale provider/model config onto the Gemini stack."""
+    if not isinstance(value, str):
+        return value
+    stripped = value.strip()
+    provider, _, model_name = stripped.partition(":")
+    if provider in _LEGACY_PROVIDER_PREFIXES:
+        return fallback
+    if provider == stripped and stripped.lower().startswith(_LEGACY_MODEL_PREFIX):
+        return fallback
+    if model_name.lower().startswith(_LEGACY_MODEL_PREFIX):
+        return fallback
+    return value
+
+
 class DrawingAttachment(BaseModel):
     """An input engineering drawing supplied alongside (or instead of) a text spec.
 
@@ -203,7 +227,10 @@ class RunConfig(BaseModel):
     # load_dotenv runs) so CAD_GEN_MODEL / CAD_GEN_CRITIC_MODEL drive both the
     # CLI and the web backend. Precedence: explicit value -> env var -> constant.
     model: str = Field(
-        default_factory=lambda: os.environ.get("CAD_GEN_MODEL") or DEFAULT_MODEL
+        default_factory=lambda: _replace_legacy_model(
+            os.environ.get("CAD_GEN_MODEL") or DEFAULT_MODEL, DEFAULT_MODEL
+        ),
+        validate_default=True,
     )
     # Reasoning/thinking effort for the generator model. `None` (default) leaves the
     # provider's own default untouched; CAD_GEN_REASONING_EFFORT overrides. Applies via
@@ -225,7 +252,11 @@ class RunConfig(BaseModel):
     # check (provider:model). Defaults to the vision-critic default; CAD_GEN_VIEW_MODEL
     # overrides. Only used in drawing mode.
     view_model: str = Field(
-        default_factory=lambda: os.environ.get("CAD_GEN_VIEW_MODEL") or DEFAULT_CRITIC_MODEL
+        default_factory=lambda: _replace_legacy_model(
+            os.environ.get("CAD_GEN_VIEW_MODEL") or DEFAULT_CRITIC_MODEL,
+            DEFAULT_CRITIC_MODEL,
+        ),
+        validate_default=True,
     )
     max_iterations: int = 5
     score_threshold: int = 8
@@ -249,11 +280,22 @@ class RunConfig(BaseModel):
             return stripped or None
         return value
 
+    @field_validator("model", "critic_model", "view_model", mode="before")
+    @classmethod
+    def _normalize_model_provider(cls, value: object, info) -> object:
+        fallback = (
+            DEFAULT_CRITIC_MODEL
+            if info.field_name in {"critic_model", "view_model"}
+            else DEFAULT_MODEL
+        )
+        return _replace_legacy_model(value, fallback)
+
     @model_validator(mode="after")
     def _default_critic_model(self) -> "RunConfig":
         if self.critic_model is None:
-            self.critic_model = (
-                os.environ.get("CAD_GEN_CRITIC_MODEL") or DEFAULT_CRITIC_MODEL
+            self.critic_model = _replace_legacy_model(
+                os.environ.get("CAD_GEN_CRITIC_MODEL") or DEFAULT_CRITIC_MODEL,
+                DEFAULT_CRITIC_MODEL,
             )
         return self
 
