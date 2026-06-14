@@ -44,6 +44,9 @@ class HoleTarget(BaseModel):
     cbore_depth_mm: float | None = None
     csk_dia_mm: float | None = None
     csk_angle_deg: float | None = None
+    # Center-to-center distance for a 2-hole pattern, ONLY when the drawing dimensions it
+    # (origin-independent, so it can be checked without a shared coordinate frame).
+    pair_spacing_mm: float | None = None
     note: str | None = None  # verbatim callout, e.g. "2X Ø5 THRU ALL ⌴Ø10↧5"
     uncertain: bool = False
 
@@ -94,6 +97,7 @@ class CylinderFace(BaseModel):
 
     radius_mm: float
     axis: tuple[float, float, float] | None = None  # unit axis direction
+    location: tuple[float, float, float] | None = None  # a point on the axis
 
 
 class GeometryMetrics(BaseModel):

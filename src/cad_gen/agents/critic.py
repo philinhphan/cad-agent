@@ -39,6 +39,44 @@ def _checks_block(check_report: CheckReport | None) -> str:
     )
 
 
+def _ungradeable_block(target: DrawingTarget | None) -> str:
+    """Values the reviewer must NOT grade: a redacted mass and any item the extractor
+    flagged uncertain. Without this the critic confabulates a target (e.g. a 247 g mass the
+    drawing redacts) and rubber-stamps the part once geometry coincidentally matches it."""
+    if target is None:
+        return ""
+    lines: list[str] = []
+    if target.target_mass_g is None and target.density_kg_m3 is not None:
+        lines.append(
+            "MASS is REDACTED/UNKNOWN (the drawing asks for it). The measured mass is the "
+            "ANSWER, not a target — do NOT grade observed mass against any value, and do NOT "
+            "invent, infer or back-compute a target mass."
+        )
+    for h in target.holes:
+        if h.uncertain:
+            lines.append(f"HOLE {h.note or f'Ø{h.diameter_mm:g}'} is UNCERTAIN — status must be 'uncertain'.")
+    for fl in target.fillets:
+        if fl.uncertain:
+            lines.append(f"FILLET R{fl.radius_mm:g} is UNCERTAIN — status must be 'uncertain'.")
+    for a in target.angles:
+        if a.uncertain:
+            lines.append(f"ANGLE {a.angle_deg:g}° is UNCERTAIN — status must be 'uncertain'.")
+    if any("uncertain" in n.lower() for n in target.notes):
+        lines.append(
+            "Some dimensions/positions are marked [UNCERTAIN] in the notes — for any feature "
+            "whose position or size you cannot verify from the views, set its checklist status "
+            "'uncertain' (severity 'major' for a real position you cannot pin down, so a "
+            "guessed interpretation is not silently accepted as correct)."
+        )
+    if not lines:
+        return ""
+    return (
+        "## DO NOT GRADE THESE (mark status 'uncertain', never pass/fail)\n- "
+        + "\n- ".join(lines)
+        + "\n\n"
+    )
+
+
 def build_review_content(
     *,
     spec: str,
@@ -86,6 +124,7 @@ def build_review_content(
     prompt = (
         f"{spec_block}"
         f"{target_block}"
+        f"{_ungradeable_block(target)}"
         f"{checks_block}"
         f"## Measured geometry (ground truth)\n{metrics_json}\n\n"
         f"## CadQuery code that produced it\n```python\n{execution.code}\n```\n\n"

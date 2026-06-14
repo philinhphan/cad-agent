@@ -192,6 +192,27 @@ async def test_critic_prompt_includes_checks_and_target(tmp_path):
     assert "Target extracted" in text and "135" in text
 
 
+def test_critic_prompt_flags_redacted_mass_as_ungradeable(tmp_path):
+    """When the drawing redacts the mass (target_mass_g is None but density is known), the
+    review prompt must tell the reviewer NOT to grade it — the seed of the false-10/10 cascade."""
+    from cad_gen.agents.critic import build_review_content
+
+    render = tmp_path / "v.png"
+    render.write_bytes(b"\x89PNG\r\n\x1a\nx")
+    target = DrawingTarget(
+        density_kg_m3=1020,
+        target_mass_g=None,  # redacted "XXX g"
+        notes=["lug-hole vertical position 10 mm from top [UNCERTAIN reference]"],
+    )
+    content = build_review_content(
+        spec="", execution=_execution(), render_path=render, target=target
+    )
+    prompt = content[0]
+    assert "DO NOT GRADE" in prompt
+    assert "MASS is REDACTED" in prompt
+    assert "UNCERTAIN" in prompt  # the [UNCERTAIN] note is surfaced too
+
+
 def test_critique_clamps_inconsistent_perfect_score():
     # A self-reported 10 cannot coexist with the critic's OWN failing checklist item.
     c = Critique(

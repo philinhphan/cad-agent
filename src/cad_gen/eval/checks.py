@@ -11,6 +11,8 @@ general drawings (and plain text specs) where no mass/density/envelope is known.
 two topology checks (single solid, watertight) always run — they need no target.
 """
 
+import math
+
 from cad_gen.models import (
     Check,
     CheckReport,
@@ -35,7 +37,7 @@ def run_checks(
     if metrics is None:
         return CheckReport(checks=[])
     checks = [_check_single_solid(metrics), _check_watertight(metrics)]
-    for builder in (_check_mass, _check_envelope, _check_holes):
+    for builder in (_check_mass, _check_envelope, _check_holes, _check_hole_geometry):
         check = builder(metrics, target)
         if check is not None:
             checks.append(check)
@@ -184,4 +186,81 @@ def _check_holes(metrics: GeometryMetrics, target: DrawingTarget | None) -> Chec
         target=tgt,
         observed=f"{len(radii)} cylindrical faces",
         message="every required hole diameter is present as a cylindrical face",
+    )
+
+
+def _perp(point, axis) -> tuple[float, float, float]:
+    """Component of `point` perpendicular to `axis` (drop the along-axis part). This makes
+    a hole's transverse position frame-stable: where a cylinder's axis-reference point sits
+    along the axis is arbitrary, but its perpendicular offset is the true hole position."""
+    p = tuple(float(v) for v in point)
+    if axis is None:
+        return p
+    n2 = sum(a * a for a in axis) or 1.0
+    dot = sum(pi * a for pi, a in zip(p, axis)) / n2
+    return tuple(pi - dot * a for pi, a in zip(p, axis))
+
+
+def _located_cylinders(metrics: GeometryMetrics, radius: float) -> list:
+    tol = max(0.25, 0.01 * radius)
+    return [
+        c
+        for c in (metrics.cylinders or [])
+        if c.location is not None and abs(c.radius_mm - radius) <= tol
+    ]
+
+
+def _check_hole_geometry(
+    metrics: GeometryMetrics, target: DrawingTarget | None
+) -> Check | None:
+    """Origin-INDEPENDENT invariants for a 2-hole pattern: mirror symmetry about the part
+    centerline (when a symmetry callout exists) and center-to-center spacing (when the
+    drawing dimensions it). Advisory; SKIPs unless it can identify exactly the pair; generous
+    tolerances; never false-fails a correct part. Absolute hole positions are deliberately NOT
+    checked — the generator chooses its own coordinate origin, so absolute coords are unstable.
+    """
+    if target is None or not target.holes:
+        return None
+    com = metrics.center_of_mass
+    bbox_max = max(metrics.bbox_mm)
+    tol_align = max(0.5, 0.01 * bbox_max)
+    tol_center = max(1.0, 0.02 * bbox_max)
+    checked = 0
+    issues: list[str] = []
+    for h in target.holes:
+        if h.count != 2:
+            continue
+        pair = _located_cylinders(metrics, h.diameter_mm / 2.0)
+        if len(pair) != 2:
+            continue  # can't isolate the pair → stay silent
+        checked += 1
+        label = h.note or f"2× Ø{h.diameter_mm:g}"
+        p1 = _perp(pair[0].location, pair[0].axis)
+        p2 = _perp(pair[1].location, pair[1].axis)
+        diff = [a - b for a, b in zip(p1, p2)]
+        if target.symmetry:
+            cper = _perp(com, pair[0].axis)
+            split = max(range(3), key=lambda i: abs(diff[i]))
+            off_align = max((abs(diff[i]) for i in range(3) if i != split), default=0.0)
+            off_center = abs((p1[split] + p2[split]) / 2.0 - cper[split])
+            if off_align > tol_align or off_center > tol_center:
+                issues.append(
+                    f"{label}: not mirror-symmetric about the part centerline "
+                    f"(off by {max(off_align, off_center):.1f} mm)"
+                )
+        if h.pair_spacing_mm is not None:
+            dist = math.sqrt(sum(d * d for d in diff))
+            if abs(dist - h.pair_spacing_mm) > max(0.5, 0.01 * h.pair_spacing_mm):
+                issues.append(
+                    f"{label}: center-to-center spacing {dist:.1f} vs "
+                    f"{h.pair_spacing_mm:.1f} mm"
+                )
+    if checked == 0:
+        return None
+    ok = not issues
+    return Check(
+        name="hole_geometry",
+        status=CheckStatus.PASS if ok else CheckStatus.FAIL,
+        critical=False,
+        message="paired-hole symmetry/spacing match the drawing" if ok else "; ".join(issues),
     )

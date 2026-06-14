@@ -37,11 +37,14 @@ def _cylinders(shape):
             if surf.GetType() != GeomAbs_Cylinder:
                 continue
             cyl = surf.Cylinder()
-            axis = cyl.Axis().Direction()
+            ax1 = cyl.Axis()
+            axis = ax1.Direction()
+            loc = ax1.Location()
             out.append(
                 {
                     "radius_mm": float(cyl.Radius()),
                     "axis": [float(axis.X()), float(axis.Y()), float(axis.Z())],
+                    "location": [float(loc.X()), float(loc.Y()), float(loc.Z())],
                 }
             )
         except Exception:

@@ -181,7 +181,7 @@ async def generate_cad(
         if on_iteration is not None:
             on_iteration(record)
 
-        if record.effective_score >= config.score_threshold:
+        if _acceptance_ok(record, config):
             break
         champion = max(iterations, key=_rank)
         feedback = _build_feedback(champion, latest=record, history=iterations)
@@ -207,6 +207,33 @@ def _rank(record: IterationRecord) -> tuple:
     """Best-iteration key. Score is primary (advisory gating); passing the deterministic
     checks only breaks ties between equal scores — it never overrides acceptance."""
     return (record.effective_score, record.passes_checks, record.index)
+
+
+def _acceptance_ok(record: IterationRecord, config: RunConfig) -> bool:
+    """Early-STOP requires corroboration, not just a high score — a single confabulated 10
+    must not end the loop. This gates the early break ONLY; the final verdict is unchanged
+    (`best = max(iterations, key=_rank)`, `accepted = best.effective_score >= threshold`), so
+    a genuinely-correct part is never made un-acceptable — worst case the loop runs to budget
+    and accepts there. Severity grading is preserved: a sub-mm minor nit still accepts."""
+    crit = record.critique
+    if crit is None or record.effective_score < config.score_threshold:
+        return False
+    # The critic's own checklist must be clean: no failing item, and no MAJOR/CRITICAL item it
+    # could not confirm. An item that is uncertain only because the drawing redacts/omits it
+    # (severity minor — e.g. a redacted mass) does NOT block.
+    for item in crit.checklist:
+        if item.status == "fail":
+            return False
+        if item.status == "uncertain" and item.severity in ("major", "critical"):
+            return False
+    # Critical deterministic checks must pass.
+    if not record.passes_checks:
+        return False
+    # A proven MAJOR/CRITICAL discrepancy blocks; a minor nit does not (keeps last session's fix).
+    ref = record.refutation
+    if ref is not None and ref.found_discrepancy and ref.severity in ("critical", "major"):
+        return False
+    return True
 
 
 async def _run_review(
@@ -453,6 +480,47 @@ def _regression_ledger(
     )
 
 
+def _open_findings(
+    history: "tuple[IterationRecord, ...] | list[IterationRecord]",
+    champion: IterationRecord,
+) -> str:
+    """Distinct MAJOR/CRITICAL findings raised across ALL iterations — refuter discrepancies
+    and critic fail / major-uncertain checklist items — that the champion does not currently
+    mark resolved. Carried forward so a real flaw is not forgotten when a later review omits
+    it (the refuter capitulation that let a wrong part through). A generator feedback aid; it
+    deliberately does not gate acceptance (`_acceptance_ok` uses current-iteration signals)."""
+    champ_pass: set[str] = set()
+    if champion.critique is not None:
+        champ_pass = {
+            i.requirement.strip().lower()
+            for i in champion.critique.checklist
+            if i.status == "pass"
+        }
+    findings: dict[str, str] = {}
+    for rec in history:
+        if rec.critique is not None:
+            for i in rec.critique.checklist:
+                if i.status == "fail" or (
+                    i.status == "uncertain" and i.severity in ("major", "critical")
+                ):
+                    key = i.requirement.strip().lower()
+                    if key not in champ_pass:
+                        findings.setdefault(key, i.requirement)
+        ref = rec.refutation
+        if ref is not None and ref.found_discrepancy and ref.severity in ("major", "critical"):
+            for d in ref.discrepancies:
+                findings.setdefault(d.strip().lower(), d)
+    if not findings:
+        return ""
+    items = list(findings.values())[:6]
+    return (
+        "UNRESOLVED FINDINGS (raised in an earlier review — confirm each is genuinely fixed; "
+        "a later review staying silent does NOT mean it is resolved):\n"
+        + "\n".join(f"- {f}" for f in items)
+        + "\n"
+    )
+
+
 def _build_feedback(
     champion: IterationRecord,
     latest: IterationRecord,
@@ -484,6 +552,7 @@ def _build_feedback(
     feedback = (
         "---\n"
         + _feedback_checks_block(champion)
+        + _open_findings(history, champion)
         + _regression_ledger(history, champion)
         + f"BEST VERSION SO FAR — a reviewer scored it {critique.score}/10. Start "
         "from THIS code; keep everything the reviewer found correct and change only "

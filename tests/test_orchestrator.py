@@ -422,6 +422,99 @@ async def test_provided_interpretation_skips_interpreter(tmp_path):
     assert (result.run_dir / "input" / "drawing_01.jpg").read_bytes() == PNG
 
 
+# --------------------------------------------------------------------------- #
+# Corroborated acceptance gate + open-findings ledger
+# --------------------------------------------------------------------------- #
+def _crit(score, checklist=None):
+    from cad_gen.models import Critique
+
+    return Critique(
+        matches_spec=score >= 8, score=score, issues=[], suggestions=[],
+        summary="x", checklist=checklist or [],
+    )
+
+
+def _gate_record(score, checklist=None, refutation=None, check_report=None):
+    from cad_gen.models import IterationRecord
+
+    return IterationRecord(
+        index=1, critique=_crit(score, checklist),
+        refutation=refutation, check_report=check_report,
+    )
+
+
+def test_acceptance_gate_accepts_clean_part():
+    from cad_gen.orchestrator import _acceptance_ok
+
+    assert _acceptance_ok(_gate_record(9), RunConfig(score_threshold=8)) is True
+
+
+def test_acceptance_gate_blocks_below_threshold():
+    from cad_gen.orchestrator import _acceptance_ok
+
+    assert _acceptance_ok(_gate_record(7), RunConfig(score_threshold=8)) is False
+
+
+def test_acceptance_gate_blocks_major_uncertain_item():
+    from cad_gen.models import ChecklistItem
+    from cad_gen.orchestrator import _acceptance_ok
+
+    rec = _gate_record(10, checklist=[ChecklistItem(requirement="lug Z", status="uncertain", severity="major")])
+    assert _acceptance_ok(rec, RunConfig(score_threshold=8)) is False
+
+
+def test_acceptance_gate_allows_minor_uncertain_redacted_mass():
+    from cad_gen.models import ChecklistItem
+    from cad_gen.orchestrator import _acceptance_ok
+
+    rec = _gate_record(9, checklist=[ChecklistItem(requirement="mass", status="uncertain", severity="minor")])
+    assert _acceptance_ok(rec, RunConfig(score_threshold=8)) is True
+
+
+def test_acceptance_gate_blocks_major_refutation_but_not_minor():
+    from cad_gen.models import Refutation
+    from cad_gen.orchestrator import _acceptance_ok
+
+    cfg = RunConfig(score_threshold=8)
+    major = Refutation(found_discrepancy=True, discrepancies=["wrong slope"], most_severe="wrong slope", severity="major")
+    minor = Refutation(found_discrepancy=True, discrepancies=["1mm nit"], most_severe="1mm nit", severity="minor")
+    assert _acceptance_ok(_gate_record(10, refutation=major), cfg) is False
+    assert _acceptance_ok(_gate_record(9, refutation=minor), cfg) is True
+
+
+def test_acceptance_gate_blocks_failing_critical_check():
+    from cad_gen.models import Check, CheckReport, CheckStatus
+    from cad_gen.orchestrator import _acceptance_ok
+
+    rep = CheckReport(checks=[Check(name="watertight", status=CheckStatus.FAIL, critical=True)])
+    assert _acceptance_ok(_gate_record(10, check_report=rep), RunConfig(score_threshold=8)) is False
+
+
+def test_open_findings_carries_unresolved_refuter_finding():
+    from cad_gen.models import IterationRecord, Refutation
+    from cad_gen.orchestrator import _open_findings
+
+    iter1 = IterationRecord(
+        index=1, critique=_crit(6),
+        refutation=Refutation(found_discrepancy=True, discrepancies=["lug holes 5 mm too low"],
+                              most_severe="lug holes 5 mm too low", severity="major"),
+    )
+    iter2 = IterationRecord(index=2, critique=_crit(6),
+                            refutation=Refutation(found_discrepancy=False, severity="none"))
+    out = _open_findings([iter1, iter2], champion=iter2)
+    assert "UNRESOLVED FINDINGS" in out
+    assert "lug holes 5 mm too low" in out
+
+
+def test_open_findings_drops_requirement_the_champion_passes():
+    from cad_gen.models import ChecklistItem, IterationRecord
+    from cad_gen.orchestrator import _open_findings
+
+    iter1 = IterationRecord(index=1, critique=_crit(6, [ChecklistItem(requirement="Central hole", status="fail", severity="major")]))
+    champ = IterationRecord(index=2, critique=_crit(9, [ChecklistItem(requirement="Central hole", status="pass", severity="major")]))
+    assert "Central hole" not in _open_findings([iter1, champ], champion=champ)
+
+
 async def test_text_only_prompt_stays_plain_string(tmp_path):
     first_contents: list = []
     images: list = []

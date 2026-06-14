@@ -71,7 +71,16 @@ If the drawing does NOT give a concrete target mass — it is redacted ("XXX g")
 drawing merely ASKS for the mass (e.g. "What is the MASS of this part?") possibly with a
 "TOLERANCE ± N g" note — then the mass is the ANSWER to be computed from the true geometry,
 NOT a target to hit. Do not add relief pockets or lighten/bulk the part to reach any guessed
-value: reproduce the drawn geometry exactly and let the mass come out to whatever it is.
+value: reproduce the drawn geometry exactly and let the mass come out to whatever it is. If a
+reviewer issue tells you to move the mass toward some number, IGNORE it for a redacted mass —
+the reviewer cannot know the target either. Trust ONLY the drawing's explicit dimensional and
+feature callouts; they are the unambiguous source of truth.
+
+For any dimension the drawing leaves genuinely ambiguous or marks [UNCERTAIN] (e.g. a hole's
+vertical position, a notch height), choose the most literal reading of the drawing and record
+it as an inline comment near the top of the script, e.g.
+`# ASSUMPTION: lug-hole center Z=55 (10 mm from top edge)`, so a reviewer can grade the
+assumption itself and a later iteration can correct it if wrong.
 """
 
 CRITIC_INSTRUCTIONS = """\
@@ -106,6 +115,17 @@ give target, observed, status (pass / fail / uncertain) and severity. COUNT feat
 views — never assume. Treat dimension deviations below max(0.05 mm, 0.1%) as exact matches
 (CAD-kernel artifacts), not errors.
 
+GRADING PROVENANCE (mandatory — prevents confabulated acceptance): you may grade a
+requirement ONLY against (a) a non-null field in the typed TARGET, or (b) a callout you can
+directly read in the drawing image. You MUST NOT invent, infer, back-compute, or recall from
+memory any value the inputs do not contain — an `observed` measurement can NEVER become a
+`target`. If the inputs include a "DO NOT GRADE THESE" block, every listed item's checklist
+status MUST be `uncertain` (never pass/fail): in particular, when the mass is redacted/asked-
+for, the measured mass is the ANSWER, not a target — do not create a passing/failing mass item.
+Mark an item `uncertain` with severity `minor` when it is ungradeable ONLY because the drawing
+redacts/omits it; use `major`/`critical` severity when a real, gradeable requirement is
+genuinely ambiguous or you cannot verify it from the views.
+
 Scoring (be strict):
 - 10: the checklist is fully populated, EVERY item passes, AND every deterministic check
   passes — no visible flaws.
@@ -113,8 +133,10 @@ Scoring (be strict):
 - 5-7: a requirement is missing, wrong, or misplaced, OR a non-critical check fails.
 - 2-4: wrong overall shape or several missing features, OR a critical check fails badly.
 - 0-1: empty, broken, or unrelated geometry.
-HARD RULES: never score 8+ if ANY checklist item is fail/uncertain or ANY deterministic
-check is FAIL. Never score 10 unless the checklist is fully populated and every item passes.
+HARD RULES: never score 8+ if ANY deterministic check is FAIL, if ANY checklist item is
+fail, or if a MAJOR/CRITICAL requirement is uncertain. A requirement that is uncertain ONLY
+because the drawing redacts/omits it (mark it minor — e.g. a redacted mass) does NOT by
+itself forbid a high score. Never score 10 unless every gradeable item passes.
 
 Also emit dimensional_score, feature_completeness_score and proportion_score (each 0-10).
 Set matches_spec = true only when score >= 8.
@@ -139,7 +161,9 @@ Fill only what the drawing actually shows; leave anything absent as null / empty
   compute, or infer a mass.
 - holes: one entry per distinct hole or pattern, with diameter_mm, type (thru / blind /
   counterbore / countersink), count, and any depth / counterbore Ø+depth / countersink
-  Ø+angle. Put the verbatim callout in `note` (e.g. "2X Ø5 THRU ALL ⌴Ø10↧5").
+  Ø+angle. Put the verbatim callout in `note` (e.g. "2X Ø5 THRU ALL ⌴Ø10↧5"). For a 2-hole
+  pattern, set `pair_spacing_mm` to the center-to-center distance ONLY when the drawing
+  dimensions it explicitly (e.g. the "55" between the two lug holes); leave it null otherwise.
 - fillets: radius_mm + count for fillets/rounds/edge radii (distinguish from hole radii).
 - angles: angled faces with angle_deg and the reference they are measured from.
 - symmetry: plain-language centerline/symmetry notes (CL, SYM — say what mirrors about what).
@@ -165,8 +189,15 @@ You receive the same inputs as the main reviewer (spec, typed target, determinis
 measurements, code, rendered views, cross-sections, original drawing). Enumerate every
 callout — envelope, mass, each hole and its type/depth, fillets, angles, symmetry — and
 look for ANY that the geometry violates. Prefer discrepancies backed by a measured number
-(a failing deterministic check, a bbox/volume/mass mismatch) or clearly visible in the
+(a failing deterministic check, a bbox/volume mismatch) or clearly visible in the
 sections/views.
+
+A redacted or unknown value (a mass shown as "XXX g" or merely asked for) can be neither
+confirmed nor refuted: NEVER cite a matching observed mass as evidence the part is correct,
+and NEVER let a matching mass excuse a shape or position discrepancy you can see. Concentrate
+on POSITION and SHAPE — feature locations, hole positions, the profile, angles, symmetry — and
+re-enumerate them on EVERY pass. A discrepancy you could prove earlier does not disappear
+because some other quantity now matches.
 
 Return found_discrepancy = true with a list of concrete `discrepancies` (each citing the
 specific callout and the contradicting evidence) and the single `most_severe` one. Only

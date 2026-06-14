@@ -136,3 +136,50 @@ def test_hole_check_skips_without_cylinder_data():
 def test_hole_check_absent_without_holes_target():
     report = run_checks(_metrics(cylinders=[CylinderFace(radius_mm=7.5)]), DrawingTarget())
     assert not any(c.name == "holes" for c in report.checks)
+
+
+# --------------------------------------------------------------------------- #
+# Origin-independent hole geometry (symmetry + spacing)
+# --------------------------------------------------------------------------- #
+def test_hole_geometry_symmetry_passes_for_mirrored_pair():
+    target = DrawingTarget(symmetry=["mirror about CL"], holes=[HoleTarget(diameter_mm=5.0, count=2)])
+    metrics = _metrics(
+        center_of_mass=(50.0, 0.0, 30.0),
+        cylinders=[
+            CylinderFace(radius_mm=2.5, axis=(1.0, 0.0, 0.0), location=(10.0, -27.5, 55.0)),
+            CylinderFace(radius_mm=2.5, axis=(1.0, 0.0, 0.0), location=(80.0, 27.5, 55.0)),
+        ],
+    )
+    hg = next(c for c in run_checks(metrics, target).checks if c.name == "hole_geometry")
+    assert hg.status is CheckStatus.PASS
+
+
+def test_hole_geometry_spacing_fails_when_off():
+    target = DrawingTarget(holes=[HoleTarget(diameter_mm=5.0, count=2, pair_spacing_mm=55.0)])
+    metrics = _metrics(
+        cylinders=[
+            CylinderFace(radius_mm=2.5, axis=(1.0, 0.0, 0.0), location=(10.0, -20.0, 55.0)),
+            CylinderFace(radius_mm=2.5, axis=(1.0, 0.0, 0.0), location=(10.0, 20.0, 55.0)),  # 40 mm apart
+        ],
+    )
+    hg = next(c for c in run_checks(metrics, target).checks if c.name == "hole_geometry")
+    assert hg.status is CheckStatus.FAIL and not hg.critical
+
+
+def test_hole_geometry_asymmetric_pair_fails():
+    target = DrawingTarget(symmetry=["mirror about CL"], holes=[HoleTarget(diameter_mm=5.0, count=2)])
+    metrics = _metrics(
+        center_of_mass=(50.0, 0.0, 30.0),
+        cylinders=[  # both on the same side of the centerline → not mirror-symmetric
+            CylinderFace(radius_mm=2.5, axis=(1.0, 0.0, 0.0), location=(10.0, 12.0, 55.0)),
+            CylinderFace(radius_mm=2.5, axis=(1.0, 0.0, 0.0), location=(10.0, 30.0, 55.0)),
+        ],
+    )
+    hg = next(c for c in run_checks(metrics, target).checks if c.name == "hole_geometry")
+    assert hg.status is CheckStatus.FAIL
+
+
+def test_hole_geometry_skips_without_located_cylinders():
+    target = DrawingTarget(holes=[HoleTarget(diameter_mm=5.0, count=2, pair_spacing_mm=55.0)])
+    report = run_checks(_metrics(cylinders=[CylinderFace(radius_mm=2.5)]), target)  # no location
+    assert not any(c.name == "hole_geometry" for c in report.checks)
