@@ -286,6 +286,7 @@ async def test_adversarial_refuter_caps_score_and_feeds_discrepancy(tmp_path):
                 "found_discrepancy": True,
                 "discrepancies": ["counterbore on the wrong face"],
                 "most_severe": "counterbore on the wrong face",
+                "severity": "major",  # a wrong-face counterbore is major → still caps
             },
             {"found_discrepancy": False, "discrepancies": [], "most_severe": None},
         ]
@@ -313,3 +314,39 @@ async def test_adversarial_refuter_caps_score_and_feeds_discrepancy(tmp_path):
     assert result.iterations[1].critique.score == 10
     assert result.accepted is True
     assert result.best.index == 2
+
+
+async def test_minor_refutation_does_not_block_acceptance(tmp_path):
+    """A graded MINOR discrepancy (a sub-mm nit) costs at most one point and must NOT
+    forbid acceptance — otherwise a correct part can never cross threshold because a
+    skeptic always finds something. This is the fix for the stuck-at-7 Tier-4 bracket."""
+    generator = scripted_generator([("tool", GOOD), ("text", "v1")])
+    critic = scripted_struct([_critique(9)])
+    refuter = scripted_struct(
+        [
+            {
+                "found_discrepancy": True,
+                "discrepancies": ["slot cutter overshoots the pad by ~1 mm"],
+                "most_severe": "slot cutter overshoots the pad by ~1 mm",
+                "severity": "minor",
+            }
+        ]
+    )
+    config = RunConfig(
+        max_iterations=1, score_threshold=8, out_dir=tmp_path / "runs", enable_adversarial=True
+    )
+
+    result = await generate_cad(
+        "a cube",
+        config,
+        generator_model=generator,
+        critic_model=critic,
+        refuter_model=refuter,
+        executor=stub_executor,
+        renderer=stub_renderer,
+    )
+
+    # 9 − 1 (minor) = 8 ≥ threshold → accepted, and the nit is still recorded.
+    assert result.iterations[0].critique.score == 8
+    assert result.accepted is True
+    assert any("overshoot" in i for i in result.iterations[0].critique.issues)

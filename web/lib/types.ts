@@ -94,6 +94,7 @@ export interface RunConfig {
   max_exec_attempts_per_iteration: number;
   critic_samples?: number;
   critic_models?: string[] | null;
+  critic_aggregation?: "min" | "median";
   enable_adversarial?: boolean;
 }
 
@@ -156,6 +157,7 @@ export interface RunConfigInput {
   score_threshold?: number;
   exec_timeout_s?: number;
   critic_samples?: number;
+  critic_aggregation?: "min" | "median";
   enable_adversarial?: boolean;
   // Optional known-target overrides (enable the deterministic mass/envelope checks).
   target_mass_g?: number | null;

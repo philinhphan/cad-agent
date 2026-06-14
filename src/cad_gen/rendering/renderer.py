@@ -128,13 +128,6 @@ def _rasterize_view(
 
 _EDGE_COLOR = np.array([0.07, 0.09, 0.12])
 
-# Mid-plane cross-sections: (title, plane normal, in-plane u axis, v axis, labels).
-_SECTION_PLANES = [
-    ("section · X-mid (Y-Z)", (1.0, 0, 0), (0, 1.0, 0), (0, 0, 1.0), "Y (mm)", "Z (mm)"),
-    ("section · Y-mid (X-Z)", (0, 1.0, 0), (1.0, 0, 0), (0, 0, 1.0), "X (mm)", "Z (mm)"),
-    ("section · Z-mid (X-Y)", (0, 0, 1.0), (1.0, 0, 0), (0, 1.0, 0), "X (mm)", "Y (mm)"),
-]
-
 
 def _silhouette(hit: np.ndarray) -> np.ndarray:
     """Boundary pixels: hit pixels with a non-hit 4-neighbour (object outline)."""
@@ -245,12 +238,56 @@ def render_views(
     return out_png
 
 
-def render_sections(stl_path: Path, out_png: Path) -> Path | None:
-    """Render three mid-plane cross-sections into `out_png`.
+def _slab_levels(mesh: trimesh.Trimesh, max_levels: int = 3) -> list[float]:
+    """Z heights, one inside each horizontal 'slab' between distinct horizontal-face levels.
 
-    Sections expose hole depth/type (THRU vs blind vs counterbore), wall thickness and
-    internal geometry the shaded exterior hides. Returns None (and writes nothing) if the
-    mesh is empty or sectioning fails — the caller treats sections as optional evidence.
+    A plan section taken inside each layer reveals outline changes a single mid-plane cut
+    misses — a raised pad, a step, or a cutter that overshoots into a layer it shouldn't.
+    """
+    normals = mesh.face_normals
+    z_centers = mesh.triangles_center[:, 2]
+    horizontal = np.abs(normals[:, 2]) > 0.99
+    if not horizontal.any():
+        return []
+    zs = np.unique(np.round(np.sort(z_centers[horizontal]), 1))
+    if len(zs) < 2:
+        return []
+    slabs = [(a + b) / 2.0 for a, b in zip(zs[:-1], zs[1:]) if (b - a) > 0.5]
+    if len(slabs) > max_levels:
+        idx = sorted({int(j) for j in np.linspace(0, len(slabs) - 1, max_levels).round()})
+        slabs = [slabs[i] for i in idx]
+    return slabs
+
+
+def _section_specs(mesh: trimesh.Trimesh):
+    """Section planes: two vertical mid-plane profiles + a horizontal plan section inside
+    each layer. Tuple is (title, origin, normal, u-axis, v-axis, xlabel, ylabel)."""
+    cx, cy, _ = mesh.bounds.mean(axis=0)
+    specs = [
+        (f"profile X-Z @ Y={cy:.0f}", (cx, cy, 0.0), (0.0, 1.0, 0.0),
+         (1.0, 0.0, 0.0), (0.0, 0.0, 1.0), "X (mm)", "Z (mm)"),
+        (f"profile Y-Z @ X={cx:.0f}", (cx, cy, 0.0), (1.0, 0.0, 0.0),
+         (0.0, 1.0, 0.0), (0.0, 0.0, 1.0), "Y (mm)", "Z (mm)"),
+    ]
+    for z in _slab_levels(mesh):
+        specs.append(
+            (f"plan X-Y @ Z={z:.0f}", (cx, cy, z), (0.0, 0.0, 1.0),
+             (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), "X (mm)", "Y (mm)")
+        )
+    return specs
+
+
+def render_sections(
+    stl_path: Path, out_png: Path, target=None, metrics=None
+) -> Path | None:
+    """Render feature-aligned cross-sections into `out_png`.
+
+    Two vertical profile cuts plus a horizontal plan cut inside each geometric layer (the
+    layers are read off the mesh's horizontal faces). Sections expose hole depth/type
+    (THRU vs blind vs counterbore), wall thickness, step/pad heights, and internal features
+    the shaded exterior hides. `target`/`metrics` are accepted as optional hints; the planes
+    are derived from the mesh so this works with or without a typed target. Returns None
+    (writing nothing) if the mesh is empty or sectioning fails — sections are optional.
     """
     try:
         mesh = trimesh.load(stl_path, force="mesh")
@@ -259,17 +296,22 @@ def render_sections(stl_path: Path, out_png: Path) -> Path | None:
     if mesh is None or not hasattr(mesh, "faces") or len(mesh.faces) == 0:
         return None
 
-    center = mesh.bounds.mean(axis=0)
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    specs = _section_specs(mesh)
+    ncols = min(3, len(specs))
+    nrows = math.ceil(len(specs) / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 5 * nrows), squeeze=False)
+    panels = axes.flat
     drew = False
-    for ax, (title, normal, u_axis, v_axis, xlabel, ylabel) in zip(axes, _SECTION_PLANES):
+    for ax, (title, origin, normal, u_axis, v_axis, xlabel, ylabel) in zip(panels, specs):
         ax.set_title(title)
         ax.set_xlabel(xlabel)
         ax.set_ylabel(ylabel)
         ax.set_aspect("equal")
         ax.grid(True, alpha=0.25)
         try:
-            section = mesh.section(plane_origin=center, plane_normal=np.array(normal))
+            section = mesh.section(
+                plane_origin=np.array(origin), plane_normal=np.array(normal)
+            )
             if section is None or len(section.entities) == 0:
                 continue
             # Project each section polyline onto the plane's in-axis basis (avoids the
@@ -282,12 +324,15 @@ def render_sections(stl_path: Path, out_png: Path) -> Path | None:
             drew = True
         except Exception:
             continue
+    for ax in panels:  # blank any unused grid cells
+        ax.set_axis_off()
     if not drew:
         plt.close(fig)
         return None
 
     fig.suptitle(
-        "mid-plane cross-sections — hole depth/type, wall thickness, internal features",
+        "feature-aligned cross-sections — profiles + per-layer plan outlines "
+        "(hole depth/type, wall thickness, step/pad heights)",
         fontsize=13,
     )
     fig.tight_layout()

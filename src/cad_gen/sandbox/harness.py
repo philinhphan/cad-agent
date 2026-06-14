@@ -18,6 +18,37 @@ import traceback
 from pathlib import Path
 
 
+def _cylinders(shape):
+    """Cylindrical B-rep faces as ``{radius_mm, axis}`` — measured off the exact solid for
+    the deterministic hole check (holes, counterbores and round slots are cylinder faces).
+
+    Best-effort and defensive: this runs in the sandbox subprocess, so any OCCT/import
+    hiccup returns an empty list rather than failing an otherwise-good build.
+    """
+    out: list[dict] = []
+    try:
+        from OCP.BRepAdaptor import BRepAdaptor_Surface
+        from OCP.GeomAbs import GeomAbs_Cylinder
+    except Exception:
+        return out
+    for face in shape.Faces():
+        try:
+            surf = BRepAdaptor_Surface(face.wrapped)
+            if surf.GetType() != GeomAbs_Cylinder:
+                continue
+            cyl = surf.Cylinder()
+            axis = cyl.Axis().Direction()
+            out.append(
+                {
+                    "radius_mm": float(cyl.Radius()),
+                    "axis": [float(axis.X()), float(axis.Y()), float(axis.Z())],
+                }
+            )
+        except Exception:
+            continue
+    return out
+
+
 def _collect_shapes(namespace, shown):
     import cadquery as cq
 
@@ -76,6 +107,7 @@ def main() -> None:
         "center_of_mass": [com.x, com.y, com.z],
         "n_solids": len(shape.Solids()),
         "n_faces": len(shape.Faces()),
+        "cylinders": _cylinders(shape),
     }
     (out_dir / "metrics.json").write_text(json.dumps(metrics))
 

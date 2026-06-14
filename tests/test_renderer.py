@@ -116,3 +116,31 @@ def test_render_sections_returns_none_for_empty_mesh(tmp_path):
     fake.write_bytes(b"solid x\nendsolid x\n")
 
     assert render_sections(fake, tmp_path / "s.png") is None
+
+
+def test_render_sections_accepts_target_and_metrics(box_stl, tmp_path):
+    """New signature is back-compatible: the orchestrator passes target/metrics hints,
+    but planes derive from the mesh, so a plain box with no target still renders."""
+    from cad_gen.rendering.renderer import render_sections
+
+    out = render_sections(box_stl, tmp_path / "s.png", target=None, metrics=None)
+    assert out is not None and out.exists()
+
+
+def test_sections_reveal_each_layer_of_a_stepped_part(tmp_path):
+    """A raised pad / step produces a distinct horizontal slab; the feature-aligned
+    sections take a plan cut inside each layer (what a single mid-plane cut would miss)."""
+    from cad_gen.rendering.renderer import _slab_levels, render_sections
+
+    base = trimesh.creation.box(extents=(40, 40, 10))  # z ∈ [-5, 5]
+    top = trimesh.creation.box(extents=(20, 20, 10))
+    top.apply_translation([0, 0, 10])                  # z ∈ [5, 15]
+    mesh = trimesh.util.concatenate([base, top])
+
+    # two slabs (z≈0 and z≈10) → the pad layer gets its own plan section
+    assert len(_slab_levels(mesh)) >= 2
+
+    path = tmp_path / "stepped.stl"
+    mesh.export(path)
+    out = render_sections(path, tmp_path / "sec.png")
+    assert out is not None and out.exists()

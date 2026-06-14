@@ -209,6 +209,52 @@ async def test_refine_anchors_on_best_not_previous_regression(tmp_path):
     assert "regress" in prompts[2].lower(), "model should be told its last change regressed"
 
 
+async def test_feedback_carries_checklist_and_regression_ledger(tmp_path):
+    """The champion's per-requirement checklist is forwarded, and any requirement an
+    EARLIER iteration satisfied but the champion no longer passes is surfaced as a
+    do-not-regress ledger — the anti whack-a-mole guard."""
+    code_c = "import cadquery as cq\nresult = cq.Workplane().box(10, 10, 10)  # v3"
+    prompts: list[str] = []
+    generator = scripted_generator(
+        [
+            ("tool", GOOD_V1), ("text", "v1"),
+            ("tool", GOOD_V2), ("text", "v2"),
+            ("tool", code_c), ("text", "v3"),
+        ],
+        prompts,
+    )
+
+    def cl(env_status, hole_status):
+        return [
+            {"requirement": "Overall envelope", "status": env_status, "severity": "critical"},
+            {"requirement": "Central hole", "status": hole_status, "severity": "critical"},
+        ]
+
+    # iter1 (score 6): envelope PASS, hole FAIL. iter2 (score 7, new champion):
+    # envelope FAIL, hole PASS — so envelope was satisfied earlier but the champion lost it.
+    iter1 = {**critique_args(6, ["hole missing"]), "checklist": cl("pass", "fail")}
+    iter2 = {**critique_args(7, ["envelope off"]), "checklist": cl("fail", "pass")}
+    critic = scripted_critic([iter1, iter2, critique_args(9, [])], [])
+    config = RunConfig(max_iterations=3, score_threshold=8, out_dir=tmp_path / "runs")
+
+    result = await generate_cad(
+        "spec",
+        config,
+        generator_model=generator,
+        critic_model=critic,
+        executor=stub_executor,
+        renderer=stub_renderer,
+    )
+
+    fb = prompts[2]  # feedback for iter3, built from champion iter2 + full history
+    assert "REQUIREMENT STATUS" in fb
+    assert "[FAIL] Overall envelope" in fb  # champion's current checklist
+    assert "[PASS] Central hole" in fb
+    # envelope passed in iter1 but champion (iter2) no longer passes it → ledger flags it
+    assert "ALREADY-SATISFIED EARLIER" in fb
+    assert result.accepted is True
+
+
 async def test_budget_exhaustion_returns_best_iteration(tmp_path):
     prompts: list[str] = []
     critic_calls: list[int] = []

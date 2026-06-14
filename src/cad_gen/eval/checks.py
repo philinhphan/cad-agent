@@ -35,7 +35,7 @@ def run_checks(
     if metrics is None:
         return CheckReport(checks=[])
     checks = [_check_single_solid(metrics), _check_watertight(metrics)]
-    for builder in (_check_mass, _check_envelope):
+    for builder in (_check_mass, _check_envelope, _check_holes):
         check = builder(metrics, target)
         if check is not None:
             checks.append(check)
@@ -134,4 +134,54 @@ def _check_envelope(
         delta=round(worst, 3),
         tolerance=round(tol, 3),
         message=f"bbox {fmt(metrics.bbox_mm)} vs envelope {fmt(target.envelope_mm)} mm{detail}",
+    )
+
+
+def _check_holes(metrics: GeometryMetrics, target: DrawingTarget | None) -> Check | None:
+    """Confirm every required hole *diameter* exists as a cylindrical face on the solid.
+
+    Conservative by construction: a real through/blind hole of diameter D always produces a
+    cylindrical B-rep face of radius D/2, so a correct part can never FAIL this. It FAILs only
+    when a required primary diameter is entirely ABSENT (a missing hole, or a radius-vs-
+    diameter mix-up). We check the primary diameter only — counterbore/round-slot radii can
+    coincide with fillet radii, which would risk a false PASS, not a false FAIL. SKIPs when no
+    holes are targeted or the kernel produced no cylinder data.
+    """
+    if target is None or not target.holes:
+        return None
+    radii = [c.radius_mm for c in (metrics.cylinders or [])]
+    if not radii:
+        return Check(
+            name="holes",
+            status=CheckStatus.SKIP,
+            critical=False,
+            message="no cylindrical-face data (hole geometry not measured)",
+        )
+
+    def matches(diameter_mm: float) -> int:
+        r = diameter_mm / 2.0
+        tol = max(0.25, 0.01 * r)
+        return sum(1 for rr in radii if abs(rr - r) <= tol)
+
+    def label(h) -> str:
+        return h.note or f"{h.count}× Ø{h.diameter_mm:g}"
+
+    missing = [label(h) for h in target.holes if matches(h.diameter_mm) == 0]
+    tgt = "; ".join(label(h) for h in target.holes)
+    if missing:
+        return Check(
+            name="holes",
+            status=CheckStatus.FAIL,
+            critical=True,
+            target=tgt,
+            observed=f"cylinder radii {sorted({round(r, 2) for r in radii})}",
+            message="missing required hole diameter(s): " + "; ".join(missing),
+        )
+    return Check(
+        name="holes",
+        status=CheckStatus.PASS,
+        critical=True,
+        target=tgt,
+        observed=f"{len(radii)} cylindrical faces",
+        message="every required hole diameter is present as a cylindrical face",
     )

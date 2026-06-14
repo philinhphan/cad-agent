@@ -15,6 +15,11 @@ Rules:
   OVERLAP/interpenetrate the body by a few millimeters before `.union()` — solids that
   merely touch at a face do NOT fuse and leave n_solids > 1. After unioning, the result
   must be a single watertight solid; if n_solids > 1, increase the overlap and re-run.
+- Build ONLY the features the spec/drawing actually shows. NEVER invent undocumented
+  geometry — no relief pockets, lightening cuts, hollows, ribs, chamfers or fillets that
+  are not called out. Extra material removed or added that the drawing does not show makes
+  the part WRONG, even if it looks plausible. A solid base stays solid unless a pocket is
+  drawn.
 - The script must be self-contained: only `cadquery` (as cq), `math`, and `numpy` may be
   imported. No file I/O, no network, no exporters, no show()/display calls — the sandbox
   handles export and measurement.
@@ -57,9 +62,16 @@ Define the drawing's named dimensions as variables at the top.
 
 When a target mass is known, the execute_cad_code tool reports the measured mass next to
 the target — keep adjusting the geometry until the measured mass is within tolerance AND
-n_solids == 1. A mass that is too high means there is too much material (thin a wall, add
-a pocket/relief, or shrink an over-sized feature); too low means a feature is missing or
+n_solids == 1. A mass that is too high means there is too much material (thin a wall or
+shrink an over-sized feature — but only by changing dimensions the drawing leaves you free
+to change, never by adding undocumented pockets); too low means a feature is missing or
 undersized. Treat the deterministic checks in the feedback as measured facts, not opinions.
+
+If the drawing does NOT give a concrete target mass — it is redacted ("XXX g"), or the
+drawing merely ASKS for the mass (e.g. "What is the MASS of this part?") possibly with a
+"TOLERANCE ± N g" note — then the mass is the ANSWER to be computed from the true geometry,
+NOT a target to hit. Do not add relief pockets or lighten/bulk the part to reach any guessed
+value: reproduce the drawn geometry exactly and let the mass come out to whatever it is.
 """
 
 CRITIC_INSTRUCTIONS = """\
@@ -76,10 +88,16 @@ WRONG until the evidence proves otherwise. You receive, in order:
 5. The CadQuery code that produced the geometry.
 6. Image 1: a composite of isometric / front (X-Z) / top (X-Y) / right (Y-Z) shaded views
    with dark edge outlines and millimeter axes (exact hidden-surface removal).
-7. Image 2 (optional): mid-plane CROSS-SECTIONS — use these to verify hole depth and type
-   (THRU vs blind vs counterbore), wall thickness, and internal features you cannot see
+7. Image 2 (optional): CROSS-SECTIONS sliced through the part's feature axes (through each
+   hole axis and at each step/pad height when a target is known, else the mid-planes) — use
+   these to verify hole depth and type (THRU vs blind vs counterbore), wall thickness, step
+   heights, and internal features (e.g. a cutter that overshoots into a pad) you cannot see
    from the outside.
 8. Remaining images (optional): the ORIGINAL engineering drawing(s) — the source of truth.
+
+FIRST write your reasoning into `analysis`: walk callout by callout (envelope, mass, each
+hole, fillet, angle, symmetry), state what you observe in the views/sections/measurements,
+and only THEN fill the checklist and scores. Do not score before reasoning.
 
 You MUST build a `checklist` with ONE item per requirement you can identify: the overall
 envelope, the target mass (when given), and EVERY hole (by diameter and type), every
@@ -125,6 +143,11 @@ Fill only what the drawing actually shows; leave anything absent as null / empty
 - fillets: radius_mm + count for fillets/rounds/edge radii (distinguish from hole radii).
 - angles: angled faces with angle_deg and the reference they are measured from.
 - symmetry: plain-language centerline/symmetry notes (CL, SYM — say what mirrors about what).
+- key_positions: any dimension that is DERIVED rather than stated outright — a face position
+  implied by an angle plus another dimension, a feature centre located by two stacked
+  dimensions, etc. Work it out ONCE and write the value WITH its formula so every later step
+  reuses the same number, e.g. "upright back face at X=42.42 mm (= 65·tan15° + 25 top-flat)"
+  or "clevis-hole centre at Z=55 mm (= 65 − 10 from top)". Leave empty if nothing is derived.
 - unit_system, notes: unit system (default MMGS) and any other useful notes.
 
 Rules:
@@ -148,7 +171,18 @@ sections/views.
 Return found_discrepancy = true with a list of concrete `discrepancies` (each citing the
 specific callout and the contradicting evidence) and the single `most_severe` one. Only
 return found_discrepancy = false if, after enumerating every callout, you genuinely cannot
-prove any discrepancy. When in doubt, refute.
+prove any discrepancy.
+
+Classify the `severity` of the most-severe discrepancy — this decides whether it blocks
+acceptance, so grade honestly and DO NOT inflate:
+- critical: wrong overall shape, a missing or extra major feature, or a FAILING deterministic
+  check (mass/envelope/single-solid/watertight).
+- major: a stated dimension or feature that is wrong by MORE than the drawing's tolerance
+  (e.g. a 25 mm flat built at 15 mm, a Ø15 hole built at Ø12, a counterbore on the wrong face).
+- minor: a sub-millimetre or purely cosmetic deviation a machinist would not reject (e.g. a
+  cutter that overshoots a face by ~1 mm, a fillet a fraction off).
+When in doubt whether something is a real flaw, still REPORT it but label it `minor` — never
+upgrade an uncertain nit to major/critical. If found_discrepancy is false, set severity "none".
 """
 
 DRAWING_PARSER_INSTRUCTIONS = """\

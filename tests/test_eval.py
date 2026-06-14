@@ -3,7 +3,13 @@
 import math
 
 from cad_gen.eval.checks import compute_mass_g, run_checks
-from cad_gen.models import CheckStatus, DrawingTarget, GeometryMetrics
+from cad_gen.models import (
+    CheckStatus,
+    CylinderFace,
+    DrawingTarget,
+    GeometryMetrics,
+    HoleTarget,
+)
 
 
 def _metrics(**overrides) -> GeometryMetrics:
@@ -90,3 +96,43 @@ def test_mass_uses_precomputed_metric_when_present():
     report = run_checks(_metrics(volume_mm3=1.0, mass_g=200.4), target)  # trust mass_g, not volume
     mass = next(c for c in report.checks if c.name == "mass")
     assert mass.status is CheckStatus.PASS and mass.observed == 200.4
+
+
+# --------------------------------------------------------------------------- #
+# Deterministic hole check (cylindrical-face presence)
+# --------------------------------------------------------------------------- #
+def test_hole_check_passes_when_every_diameter_present():
+    target = DrawingTarget(
+        holes=[HoleTarget(diameter_mm=15.0), HoleTarget(diameter_mm=5.0, count=2)]
+    )
+    metrics = _metrics(
+        cylinders=[
+            CylinderFace(radius_mm=7.5),   # Ø15 through
+            CylinderFace(radius_mm=15.0),  # Ø30 counterbore (ignored — primary Ø only)
+            CylinderFace(radius_mm=2.5),   # Ø5 ×2
+            CylinderFace(radius_mm=2.5),
+            CylinderFace(radius_mm=20.0),  # an R20 fillet — must not matter
+        ]
+    )
+    holes = next(c for c in run_checks(metrics, target).checks if c.name == "holes")
+    assert holes.status is CheckStatus.PASS
+
+
+def test_hole_check_fails_when_a_primary_diameter_is_absent():
+    target = DrawingTarget(holes=[HoleTarget(diameter_mm=15.0)])
+    metrics = _metrics(cylinders=[CylinderFace(radius_mm=2.5)])  # only a Ø5, no Ø15
+    report = run_checks(metrics, target)
+    holes = next(c for c in report.checks if c.name == "holes")
+    assert holes.status is CheckStatus.FAIL and holes.critical
+    assert not report.all_critical_pass
+
+
+def test_hole_check_skips_without_cylinder_data():
+    target = DrawingTarget(holes=[HoleTarget(diameter_mm=15.0)])
+    holes = next(c for c in run_checks(_metrics(), target).checks if c.name == "holes")
+    assert holes.status is CheckStatus.SKIP and not holes.critical
+
+
+def test_hole_check_absent_without_holes_target():
+    report = run_checks(_metrics(cylinders=[CylinderFace(radius_mm=7.5)]), DrawingTarget())
+    assert not any(c.name == "holes" for c in report.checks)

@@ -75,9 +75,25 @@ class DrawingTarget(BaseModel):
     fillets: list[FilletTarget] = []
     angles: list[AngleTarget] = []
     symmetry: list[str] = []  # e.g. ["mirror about YZ midplane (CL SYM)"]
+    # Derived/positional dimensions worked out ONCE so every iteration shares the same
+    # interpretation instead of re-deriving (and disagreeing) — e.g. an upright back-face
+    # position implied by a slope + a top-flat width. Free-form, each ideally with its formula.
+    key_positions: list[str] = []
     unit_system: str = "MMGS"
     notes: list[str] = []
     raw_digest: str = ""  # the free-form Markdown digest (human-editable surface)
+
+
+class CylinderFace(BaseModel):
+    """One cylindrical B-rep face measured off the OCCT solid (before tessellation).
+
+    Holes, counterbores and round slots all present as cylindrical faces; so do fillets
+    and outer round-overs. We record the exact radius + axis so a deterministic check can
+    confirm a required hole *diameter* exists, without trusting the vision render.
+    """
+
+    radius_mm: float
+    axis: tuple[float, float, float] | None = None  # unit axis direction
 
 
 class GeometryMetrics(BaseModel):
@@ -90,6 +106,9 @@ class GeometryMetrics(BaseModel):
     n_faces: int
     is_watertight: bool | None = None
     mass_g: float | None = None  # volume × density, filled when a density is known
+    # Cylindrical B-rep faces (radius + axis), measured by the harness. Optional/back-compat:
+    # absent in older metrics.json and in scripted test metrics → empty.
+    cylinders: list[CylinderFace] = []
 
 
 class ExecutionResult(BaseModel):
@@ -161,6 +180,9 @@ class Critique(BaseModel):
     issues: list[str]
     suggestions: list[str]
     summary: str
+    # Free-form, callout-by-callout reasoning the critic writes BEFORE scoring (a cheap
+    # single-call chain-of-thought; optional → backward compatible).
+    analysis: str = ""
     # Richer, enumerated evaluation (optional → backward compatible).
     checklist: list[ChecklistItem] = []
     dimensional_score: int | None = Field(default=None, ge=0, le=10)
@@ -184,6 +206,10 @@ class Refutation(BaseModel):
     found_discrepancy: bool
     discrepancies: list[str] = []
     most_severe: str | None = None
+    # Severity of the most-severe discrepancy — graded so a sub-mm cosmetic nit no longer
+    # blocks acceptance the way a wrong/missing feature does. Default "none" keeps a
+    # refutation that omits it (older scripts) from capping the score.
+    severity: Literal["critical", "major", "minor", "none"] = "none"
 
 
 class IterationRecord(BaseModel):

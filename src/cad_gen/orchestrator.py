@@ -28,6 +28,7 @@ from cad_gen.agents.target import build_target_agent, extract_target
 from cad_gen.eval.checks import compute_mass_g, run_checks
 from cad_gen.imaging import drawing_filename
 from cad_gen.models import (
+    Critique,
     DrawingAttachment,
     DrawingTarget,
     IterationRecord,
@@ -144,7 +145,11 @@ async def generate_cad(
             )
             if config.enable_sections:
                 record.section_path = _safe_sections(
-                    section_renderer, execution.stl_path, iter_dir / "sections.png"
+                    section_renderer,
+                    execution.stl_path,
+                    iter_dir / "sections.png",
+                    target=target,
+                    metrics=execution.metrics,
                 )
             record.check_report = run_checks(execution.metrics, target)
             record.critique = await _run_review(
@@ -179,7 +184,7 @@ async def generate_cad(
         if record.effective_score >= config.score_threshold:
             break
         champion = max(iterations, key=_rank)
-        feedback = _build_feedback(champion, latest=record)
+        feedback = _build_feedback(champion, latest=record, history=iterations)
 
     best = max(iterations, key=_rank)
     result = RunResult(
@@ -238,22 +243,35 @@ async def _run_review(
 
 
 def _apply_refutation(record: IterationRecord, config: RunConfig) -> None:
-    """A proven discrepancy caps the critic's score below the accept threshold and feeds
-    its findings forward — an LLM-ensemble decision, not a deterministic override."""
+    """Grade a proven discrepancy instead of binary-capping it. A critical/major flaw caps
+    the score below the accept threshold (blocking acceptance, as before); a minor sub-mm
+    nit costs at most one point and never blocks on its own — otherwise a perfect part can
+    never be accepted because a skeptic always finds *something*. An LLM-ensemble decision,
+    not a deterministic override; the discrepancy is fed forward either way."""
     ref = record.refutation
     if ref is None or not ref.found_discrepancy or record.critique is None:
         return
-    cap = max(0, config.score_threshold - 1)
-    record.critique.score = min(record.critique.score, cap)
-    record.critique.matches_spec = record.critique.score >= config.score_threshold
     record.critique.issues = [*record.critique.issues, *ref.discrepancies]
+    if ref.severity in ("critical", "major"):
+        cap = max(0, config.score_threshold - 1)
+        record.critique.score = min(record.critique.score, cap)
+    else:
+        # "minor", or a found-but-ungraded discrepancy: register a one-point penalty so the
+        # signal is not lost, but do not forbid acceptance on a cosmetic finding alone.
+        record.critique.score = max(0, record.critique.score - 1)
+    record.critique.matches_spec = record.critique.score >= config.score_threshold
 
 
 def _safe_sections(
-    section_renderer: SectionRendererFn, stl_path, out_png: Path
+    section_renderer: SectionRendererFn,
+    stl_path,
+    out_png: Path,
+    *,
+    target: DrawingTarget | None = None,
+    metrics=None,
 ) -> Path | None:
     try:
-        return section_renderer(stl_path, out_png)
+        return section_renderer(stl_path, out_png, target=target, metrics=metrics)
     except Exception:
         return None
 
@@ -384,12 +402,68 @@ def _feedback_checks_block(record: IterationRecord) -> str:
     )
 
 
-def _build_feedback(champion: IterationRecord, latest: IterationRecord) -> str:
+def _checklist_block(critique: "Critique | None") -> str:
+    """The champion's per-requirement checklist as a keep/fix table. The critic already
+    produces this (pass/fail per requirement); surfacing it tells the generator exactly
+    what NOT to touch, so a targeted fix doesn't regress an already-correct feature."""
+    if critique is None or not critique.checklist:
+        return ""
+    label = {"pass": "PASS", "fail": "FAIL", "uncertain": "UNCERTAIN"}
+    lines = []
+    for i in critique.checklist:
+        detail = ""
+        if i.target:
+            detail = f" — target {i.target}"
+            if i.observed:
+                detail += f", observed {i.observed}"
+        lines.append(f"- [{label.get(i.status, i.status.upper())}] {i.requirement}{detail}")
+    return (
+        "REQUIREMENT STATUS (keep every PASS exactly as-is; fix every FAIL/UNCERTAIN):\n"
+        + "\n".join(lines)
+        + "\n"
+    )
+
+
+def _regression_ledger(
+    history: "tuple[IterationRecord, ...] | list[IterationRecord]",
+    champion: IterationRecord,
+) -> str:
+    """Requirements that reached PASS in ANY earlier iteration but the champion no longer
+    shows passing — folded across the whole run so a fix for one issue cannot silently
+    undo another (the whack-a-mole the loop kept hitting). Items the champion already
+    passes are covered by the checklist table, so they are omitted here to avoid bloat."""
+    ever_passed: dict[str, str] = {}
+    for rec in history:
+        if rec.critique is None:
+            continue
+        for item in rec.critique.checklist:
+            if item.status == "pass":
+                ever_passed.setdefault(item.requirement.strip().lower(), item.requirement)
+    champ_pass = {
+        i.requirement.strip().lower()
+        for i in (champion.critique.checklist if champion.critique else [])
+        if i.status == "pass"
+    }
+    at_risk = [disp for key, disp in ever_passed.items() if key not in champ_pass]
+    if not at_risk:
+        return ""
+    return (
+        "ALREADY-SATISFIED EARLIER (an earlier version got these right — your change MUST "
+        "NOT regress them):\n" + "\n".join(f"- {r}" for r in at_risk) + "\n"
+    )
+
+
+def _build_feedback(
+    champion: IterationRecord,
+    latest: IterationRecord,
+    history: "tuple[IterationRecord, ...] | list[IterationRecord]" = (),
+) -> str:
     """Refinement context for the next iteration, anchored on the best result so
     far so the loop cannot drift away from a good design.
 
     `champion` is the highest-scoring iteration to date; `latest` is the one that
-    just ran (used only to warn the model when its most recent change regressed).
+    just ran (used only to warn the model when its most recent change regressed);
+    `history` is every iteration so far (folded into a do-not-regress ledger).
     """
     if champion.execution is None or not champion.execution.success:
         error = (
@@ -410,10 +484,12 @@ def _build_feedback(champion: IterationRecord, latest: IterationRecord) -> str:
     feedback = (
         "---\n"
         + _feedback_checks_block(champion)
+        + _regression_ledger(history, champion)
         + f"BEST VERSION SO FAR — a reviewer scored it {critique.score}/10. Start "
         "from THIS code; keep everything the reviewer found correct and change only "
         "what is needed to fix the issues below.\n"
-        f"Code:\n```python\n{champion.execution.code}\n```\n"
+        + _checklist_block(critique)
+        + f"Code:\n```python\n{champion.execution.code}\n```\n"
         f"Reviewer issues:\n{issues}\n"
         f"Reviewer suggestions:\n{suggestions}\n"
         "Produce an improved version that fixes every issue, then validate it with "

@@ -56,7 +56,11 @@ def generate(
         help="Vision critic model; repeat for a multi-model panel (default google:gemini-3.5-flash).",
     ),
     critic_samples: int = typer.Option(
-        1, "--critic-samples", min=1, help="Independent critic samples to aggregate (conservative min)."
+        3,
+        "--critic-samples",
+        min=1,
+        help="Independent critic samples per iteration, aggregated by median (default 3; "
+        "set 1 to disable the panel). Repeat --critic-model instead for a multi-model panel.",
     ),
     adversarial: bool = typer.Option(
         True, "--adversarial/--no-adversarial", help="Run an adversarial refuter each iteration."
@@ -99,6 +103,7 @@ def generate(
         exec_timeout_s=timeout,
         out_dir=out,
         critic_samples=critic_samples,
+        critic_aggregation="median",  # stable central estimate for the multi-sample panel
         enable_adversarial=adversarial,
     )
     if model:
