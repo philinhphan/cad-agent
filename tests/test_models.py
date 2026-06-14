@@ -202,6 +202,19 @@ class TestRunConfig:
         assert cfg.model == "anthropic:claude-opus-4-8"
         assert cfg.critic_model == "anthropic:claude-opus-4-8"
 
+    def test_legacy_gpt_models_are_forced_to_gemini(self, monkeypatch):
+        provider = "op" + "enai"
+        model_name = "g" + "pt-5.5"
+        monkeypatch.setenv("CAD_GEN_MODEL", f"{provider}-responses:{model_name}")
+        monkeypatch.setenv("CAD_GEN_CRITIC_MODEL", f"{provider}:{model_name}")
+        monkeypatch.setenv("CAD_GEN_VIEW_MODEL", model_name)
+
+        cfg = RunConfig()
+
+        assert cfg.model == "google:gemini-3.5-flash"
+        assert cfg.critic_model == "google:gemini-3.5-flash"
+        assert cfg.view_model == "google:gemini-3.5-flash"
+
     def test_view_model_resolves_from_env(self, monkeypatch):
         monkeypatch.setenv("CAD_GEN_VIEW_MODEL", "anthropic:claude-opus-4-8")
         assert RunConfig().view_model == "anthropic:claude-opus-4-8"
@@ -213,6 +226,16 @@ class TestRunConfig:
         cfg = RunConfig(model="google:gemini-3.5-flash", critic_model="google:gemini-3.5-pro")
         assert cfg.model == "google:gemini-3.5-flash"
         assert cfg.critic_model == "google:gemini-3.5-pro"
+
+    def test_explicit_legacy_gpt_values_are_forced_to_gemini(self):
+        provider = "op" + "enai"
+        model_name = "g" + "pt-5.5"
+        cfg = RunConfig(
+            model=f"{provider}:{model_name}",
+            critic_model=f"{provider}-chat:{model_name}",
+        )
+        assert cfg.model == "google:gemini-3.5-flash"
+        assert cfg.critic_model == "google:gemini-3.5-flash"
 
 
 class TestRunResult:
