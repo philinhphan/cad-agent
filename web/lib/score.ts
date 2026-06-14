@@ -1,6 +1,13 @@
 // Shared score → color/label helpers (0-10 critic scale).
 
+import type { CheckReport } from "./types";
+
 export type ScoreTone = "bad" | "warn" | "good";
+
+/** A critical deterministic check failed (advisory) — surfaced as a disagreement flag. */
+export function hasCriticalFailure(report: CheckReport | null | undefined): boolean {
+  return !!report?.checks.some((c) => c.critical && c.status === "fail");
+}
 
 export function scoreTone(score: number, threshold = 8): ScoreTone {
   if (score >= threshold) return "good";

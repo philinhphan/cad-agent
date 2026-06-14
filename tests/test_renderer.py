@@ -86,3 +86,33 @@ def test_renders_without_metrics(box_stl, tmp_path):
 
     assert out.exists()
     assert out.stat().st_size > 10_000
+
+
+def test_render_views_with_edges_still_renders_geometry(box_stl, tmp_path):
+    from PIL import Image
+
+    out = tmp_path / "edged.png"
+    render_views(box_stl, out, with_edges=True)
+
+    assert out.exists()
+    levels = Image.open(out).convert("L").getcolors(maxcolors=1_000_000)
+    assert len(levels) > 20, "edge overlay must not blank the render"
+
+
+def test_render_sections_produces_png(box_stl, tmp_path):
+    from cad_gen.rendering.renderer import render_sections
+
+    out = tmp_path / "sections.png"
+    result = render_sections(box_stl, out)
+
+    assert result == out
+    assert out.exists() and out.stat().st_size > 5_000
+
+
+def test_render_sections_returns_none_for_empty_mesh(tmp_path):
+    from cad_gen.rendering.renderer import render_sections
+
+    fake = tmp_path / "empty.stl"
+    fake.write_bytes(b"solid x\nendsolid x\n")
+
+    assert render_sections(fake, tmp_path / "s.png") is None

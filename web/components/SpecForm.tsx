@@ -18,7 +18,22 @@ const DEFAULTS = {
   max_iterations: 5,
   score_threshold: 8,
   exec_timeout_s: 60,
+  critic_samples: 1,
+  enable_adversarial: true,
+  target_mass_g: "",
+  mass_tol_g: "",
+  density_kg_m3: "",
+  envelope_mm: "",
 };
+
+function parseEnvelope(text: string): [number, number, number] | null {
+  const parts = text
+    .toLowerCase()
+    .split(/[x×,]/)
+    .map((p) => Number(p.trim()))
+    .filter((n) => !Number.isNaN(n));
+  return parts.length === 3 ? [parts[0], parts[1], parts[2]] : null;
+}
 
 const MAX_FILES = 5;
 const ACCEPT = ["image/png", "image/jpeg"];
@@ -39,12 +54,19 @@ export function SpecForm() {
   const inputRef = useRef<HTMLInputElement>(null);
 
   function buildConfig(): RunConfigInput {
+    const num = (s: string) => (s.trim() === "" ? null : Number(s));
     return {
       model: cfg.model,
       critic_model: cfg.critic_model.trim() || null,
       max_iterations: cfg.max_iterations,
       score_threshold: cfg.score_threshold,
       exec_timeout_s: cfg.exec_timeout_s,
+      critic_samples: cfg.critic_samples,
+      enable_adversarial: cfg.enable_adversarial,
+      target_mass_g: num(cfg.target_mass_g),
+      mass_tol_g: num(cfg.mass_tol_g),
+      density_kg_m3: num(cfg.density_kg_m3),
+      envelope_mm: parseEnvelope(cfg.envelope_mm),
     };
   }
 
@@ -229,25 +251,73 @@ export function SpecForm() {
         {advanced ? "▾" : "▸"} model & sandbox
       </button>
       {advanced && (
-        <div className="mt-3 grid gap-4 border-t border-line pt-4 sm:grid-cols-3">
-          <TextField
-            label="model"
-            value={cfg.model}
-            onChange={(v) => setCfg({ ...cfg, model: v })}
-          />
-          <TextField
-            label="critic model"
-            placeholder="(default: google:gemini-3.5-flash)"
-            value={cfg.critic_model}
-            onChange={(v) => setCfg({ ...cfg, critic_model: v })}
-          />
-          <NumberField
-            label="exec timeout (s)"
-            value={cfg.exec_timeout_s}
-            min={10}
-            max={600}
-            onChange={(v) => setCfg({ ...cfg, exec_timeout_s: v })}
-          />
+        <div className="mt-3 space-y-4 border-t border-line pt-4">
+          <div className="grid gap-4 sm:grid-cols-3">
+            <TextField
+              label="model"
+              value={cfg.model}
+              onChange={(v) => setCfg({ ...cfg, model: v })}
+            />
+            <TextField
+              label="critic model"
+              placeholder="(default: google:gemini-3.5-flash)"
+              value={cfg.critic_model}
+              onChange={(v) => setCfg({ ...cfg, critic_model: v })}
+            />
+            <NumberField
+              label="exec timeout (s)"
+              value={cfg.exec_timeout_s}
+              min={10}
+              max={600}
+              onChange={(v) => setCfg({ ...cfg, exec_timeout_s: v })}
+            />
+            <NumberField
+              label="critic samples"
+              value={cfg.critic_samples}
+              min={1}
+              max={5}
+              onChange={(v) => setCfg({ ...cfg, critic_samples: v })}
+            />
+            <label className="flex items-center gap-2 self-end pb-2 text-[0.85rem] text-ink-dim">
+              <input
+                type="checkbox"
+                checked={cfg.enable_adversarial}
+                onChange={(e) => setCfg({ ...cfg, enable_adversarial: e.target.checked })}
+                className="accent-[var(--color-accent)]"
+              />
+              adversarial refuter
+            </label>
+          </div>
+
+          <div>
+            <p className="tech-label mb-2">
+              known target (optional) — enables the deterministic mass / envelope checks
+            </p>
+            <div className="grid gap-4 sm:grid-cols-4">
+              <TextField
+                label="target mass (g)"
+                value={cfg.target_mass_g}
+                onChange={(v) => setCfg({ ...cfg, target_mass_g: v })}
+              />
+              <TextField
+                label="mass tol (g)"
+                placeholder="(default 1%)"
+                value={cfg.mass_tol_g}
+                onChange={(v) => setCfg({ ...cfg, mass_tol_g: v })}
+              />
+              <TextField
+                label="density (kg/m³)"
+                value={cfg.density_kg_m3}
+                onChange={(v) => setCfg({ ...cfg, density_kg_m3: v })}
+              />
+              <TextField
+                label="envelope LxWxH"
+                placeholder="135x85x65"
+                value={cfg.envelope_mm}
+                onChange={(v) => setCfg({ ...cfg, envelope_mm: v })}
+              />
+            </div>
+          </div>
         </div>
       )}
 

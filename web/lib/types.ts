@@ -8,6 +8,7 @@ export interface GeometryMetrics {
   n_solids: number;
   n_faces: number;
   is_watertight: boolean | null;
+  mass_g: number | null;
 }
 
 // Absolute *_path fields are stripped server-side; the browser uses ArtifactUrls.
@@ -20,18 +21,55 @@ export interface ExecutionResult {
   duration_s: number;
 }
 
+export interface ChecklistItem {
+  requirement: string;
+  target: string | null;
+  observed: string | null;
+  status: "pass" | "fail" | "uncertain";
+  severity: "critical" | "major" | "minor";
+}
+
 export interface Critique {
   matches_spec: boolean;
   score: number; // 0-10
   issues: string[];
   suggestions: string[];
   summary: string;
+  checklist: ChecklistItem[];
+  dimensional_score: number | null;
+  feature_completeness_score: number | null;
+  proportion_score: number | null;
+}
+
+export type CheckStatus = "pass" | "fail" | "skip";
+
+export interface Check {
+  name: string;
+  status: CheckStatus;
+  critical: boolean;
+  target: number | string | null;
+  observed: number | string | null;
+  delta: number | null;
+  tolerance: number | null;
+  message: string;
+}
+
+export interface CheckReport {
+  checks: Check[];
+}
+
+export interface Refutation {
+  found_discrepancy: boolean;
+  discrepancies: string[];
+  most_severe: string | null;
 }
 
 export interface IterationRecord {
   index: number;
   execution: ExecutionResult | null;
   critique: Critique | null;
+  check_report: CheckReport | null;
+  refutation: Refutation | null;
   summary: string;
 }
 
@@ -39,6 +77,7 @@ export interface ArtifactUrls {
   stl?: string;
   step?: string;
   views?: string;
+  sections?: string;
 }
 
 export interface IterationPayload {
@@ -53,6 +92,9 @@ export interface RunConfig {
   score_threshold: number;
   exec_timeout_s: number;
   max_exec_attempts_per_iteration: number;
+  critic_samples?: number;
+  critic_models?: string[] | null;
+  enable_adversarial?: boolean;
 }
 
 // SSE events ---------------------------------------------------------------
@@ -113,4 +155,11 @@ export interface RunConfigInput {
   max_iterations?: number;
   score_threshold?: number;
   exec_timeout_s?: number;
+  critic_samples?: number;
+  enable_adversarial?: boolean;
+  // Optional known-target overrides (enable the deterministic mass/envelope checks).
+  target_mass_g?: number | null;
+  mass_tol_g?: number | null;
+  density_kg_m3?: number | null;
+  envelope_mm?: [number, number, number] | null;
 }

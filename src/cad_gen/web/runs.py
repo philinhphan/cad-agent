@@ -25,7 +25,12 @@ from cad_gen.orchestrator import generate_cad
 
 _SENTINEL = object()
 # friendly url key -> artifact filename
-_ARTIFACTS = {"stl": "model.stl", "step": "model.step", "views": "views.png"}
+_ARTIFACTS = {
+    "stl": "model.stl",
+    "step": "model.step",
+    "views": "views.png",
+    "sections": "sections.png",
+}
 _ARTIFACT_NAMES = tuple(_ARTIFACTS.values())
 
 
@@ -109,6 +114,7 @@ def _capture_artifacts(handle: RunHandle, record: IterationRecord) -> None:
         "model.stl": Path(ex.stl_path) if ex.stl_path else None,
         "model.step": Path(ex.step_path) if ex.step_path else None,
         "views.png": Path(record.render_path) if record.render_path else None,
+        "sections.png": Path(record.section_path) if record.section_path else None,
     }
 
 
@@ -132,6 +138,7 @@ def _strip_paths(record_data: dict) -> dict:
         record_data["execution"].pop("stl_path", None)
         record_data["execution"].pop("step_path", None)
     record_data.pop("render_path", None)
+    record_data.pop("section_path", None)
     return record_data
 
 
@@ -144,6 +151,8 @@ def iteration_payload(run_id: str, record: IterationRecord) -> dict:
     if ex is not None and ex.success:
         base = f"/api/runs/{run_id}/iterations/{record.index}"
         urls = {key: f"{base}/{name}" for key, name in _ARTIFACTS.items()}
+        if record.section_path is None:
+            urls.pop("sections", None)  # don't advertise a section render that doesn't exist
     return {"record": data, "urls": urls}
 
 
@@ -277,8 +286,8 @@ def input_artifact(run_id: str, name: str, runs_dir: Path) -> Response:
 def _disk_artifact_path(run_id: str, index: int, name: str, runs_dir: Path) -> Path:
     """Resolve an artifact for a finished run by reading its iteration.json."""
     iter_dir = Path(runs_dir) / run_id / f"iter_{index:02d}"
-    if name == "views.png":
-        return iter_dir / "views.png"
+    if name in ("views.png", "sections.png"):
+        return iter_dir / name
     record_file = iter_dir / "iteration.json"
     if not record_file.exists():
         raise HTTPException(status_code=404, detail="run not found")

@@ -126,10 +126,74 @@ def _rasterize_view(
     return rgb, depth, extent
 
 
+_EDGE_COLOR = np.array([0.07, 0.09, 0.12])
+
+# Mid-plane cross-sections: (title, plane normal, in-plane u axis, v axis, labels).
+_SECTION_PLANES = [
+    ("section · X-mid (Y-Z)", (1.0, 0, 0), (0, 1.0, 0), (0, 0, 1.0), "Y (mm)", "Z (mm)"),
+    ("section · Y-mid (X-Z)", (0, 1.0, 0), (1.0, 0, 0), (0, 0, 1.0), "X (mm)", "Z (mm)"),
+    ("section · Z-mid (X-Y)", (0, 0, 1.0), (1.0, 0, 0), (0, 1.0, 0), "X (mm)", "Y (mm)"),
+]
+
+
+def _silhouette(hit: np.ndarray) -> np.ndarray:
+    """Boundary pixels: hit pixels with a non-hit 4-neighbour (object outline)."""
+    interior = hit.copy()
+    interior[:-1, :] &= hit[1:, :]
+    interior[1:, :] &= hit[:-1, :]
+    interior[:, :-1] &= hit[:, 1:]
+    interior[:, 1:] &= hit[:, :-1]
+    return hit & ~interior
+
+
+def _edge_mask(depth: np.ndarray) -> np.ndarray:
+    """Silhouette + internal depth-discontinuity edges (crisp feature boundaries)."""
+    hit = np.isfinite(depth)
+    if not hit.any():
+        return np.zeros_like(hit)
+    d = depth.copy()
+    dmin = float(d[hit].min())
+    d[~hit] = dmin
+    span = max(float(d[hit].max()) - dmin, 1e-6)
+    thr = span * 0.06
+    gx = np.zeros_like(d)
+    gx[:, 1:] = np.abs(d[:, 1:] - d[:, :-1])
+    gy = np.zeros_like(d)
+    gy[1:, :] = np.abs(d[1:, :] - d[:-1, :])
+    both_x = np.zeros_like(hit)
+    both_x[:, 1:] = hit[:, 1:] & hit[:, :-1]
+    both_y = np.zeros_like(hit)
+    both_y[1:, :] = hit[1:, :] & hit[:-1, :]
+    internal = (np.maximum(gx, gy) > thr) & (both_x | both_y)
+    return internal | _silhouette(hit)
+
+
+def _projected_span(depth: np.ndarray, extent: tuple) -> tuple[float, float] | None:
+    """Width × height (world mm) of the rendered silhouette in this view's axes."""
+    hit = np.isfinite(depth)
+    if not hit.any():
+        return None
+    rows = np.where(hit.any(axis=1))[0]
+    cols = np.where(hit.any(axis=0))[0]
+    x0, x1, y0, y1 = extent
+    res = depth.shape[0]
+    wx = (cols[-1] - cols[0] + 1) / res * (x1 - x0)
+    wy = (rows[-1] - rows[0] + 1) / res * (y1 - y0)
+    return float(wx), float(wy)
+
+
 def render_views(
-    stl_path: Path, out_png: Path, metrics: GeometryMetrics | None = None
+    stl_path: Path,
+    out_png: Path,
+    metrics: GeometryMetrics | None = None,
+    target=None,
+    with_edges: bool = True,
 ) -> Path:
-    """Render iso/front/top/right shaded views of `stl_path` into `out_png`."""
+    """Render iso/front/top/right shaded views of `stl_path` into `out_png`.
+
+    Edge outlines (silhouette + internal steps) and a per-view measured-span label make
+    holes, counterbores and step heights legible to the vision critic.
+    """
     mesh = trimesh.load(stl_path, force="mesh")
     bounds = mesh.bounds
     center = bounds.mean(axis=0)
@@ -137,7 +201,10 @@ def render_views(
 
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     for ax, (title, elev, azim, xlabel, ylabel) in zip(axes.flat, _VIEWS):
-        rgb, _, extent = _rasterize_view(mesh, elev, azim, center, half)
+        rgb, depth, extent = _rasterize_view(mesh, elev, azim, center, half)
+        if with_edges:
+            rgb = rgb.copy()
+            rgb[_edge_mask(depth)] = _EDGE_COLOR
         ax.imshow(rgb, origin="lower", extent=extent, interpolation="nearest")
         ax.set_title(title)
         if xlabel is None:
@@ -147,16 +214,82 @@ def render_views(
             ax.set_xlabel(xlabel)
             ax.set_ylabel(ylabel)
             ax.grid(True, alpha=0.25)
+            span = _projected_span(depth, extent)
+            if span is not None:
+                ax.text(
+                    0.02,
+                    0.98,
+                    f"Δ{xlabel[0].lower()} {span[0]:.1f} · Δ{ylabel[0].lower()} {span[1]:.1f} mm",
+                    transform=ax.transAxes,
+                    va="top",
+                    ha="left",
+                    fontsize=8,
+                    color="#1b2433",
+                    bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="none", alpha=0.7),
+                )
 
     if metrics is not None:
         x, y, z = metrics.bbox_mm
         watertight = {True: "yes", False: "NO", None: "?"}[metrics.is_watertight]
+        mass = f"   ·   mass {metrics.mass_g:,.1f} g" if metrics.mass_g is not None else ""
         fig.suptitle(
             f"bbox {x:.1f} × {y:.1f} × {z:.1f} mm   ·   volume {metrics.volume_mm3:,.0f} mm³"
-            f"   ·   solids {metrics.n_solids}   ·   watertight {watertight}",
+            f"   ·   solids {metrics.n_solids}   ·   watertight {watertight}{mass}",
             fontsize=13,
         )
 
+    fig.tight_layout()
+    out_png = Path(out_png)
+    fig.savefig(out_png, dpi=100)
+    plt.close(fig)
+    return out_png
+
+
+def render_sections(stl_path: Path, out_png: Path) -> Path | None:
+    """Render three mid-plane cross-sections into `out_png`.
+
+    Sections expose hole depth/type (THRU vs blind vs counterbore), wall thickness and
+    internal geometry the shaded exterior hides. Returns None (and writes nothing) if the
+    mesh is empty or sectioning fails — the caller treats sections as optional evidence.
+    """
+    try:
+        mesh = trimesh.load(stl_path, force="mesh")
+    except Exception:
+        return None
+    if mesh is None or not hasattr(mesh, "faces") or len(mesh.faces) == 0:
+        return None
+
+    center = mesh.bounds.mean(axis=0)
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    drew = False
+    for ax, (title, normal, u_axis, v_axis, xlabel, ylabel) in zip(axes, _SECTION_PLANES):
+        ax.set_title(title)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+        ax.set_aspect("equal")
+        ax.grid(True, alpha=0.25)
+        try:
+            section = mesh.section(plane_origin=center, plane_normal=np.array(normal))
+            if section is None or len(section.entities) == 0:
+                continue
+            # Project each section polyline onto the plane's in-axis basis (avoids the
+            # to_planar()/networkx path); plot crisp contour lines incl. inner hole loops.
+            basis = np.column_stack([np.array(u_axis), np.array(v_axis)])
+            verts = section.vertices
+            for entity in section.entities:
+                uv = verts[entity.points] @ basis
+                ax.plot(uv[:, 0], uv[:, 1], color="#1b2433", lw=1.5)
+            drew = True
+        except Exception:
+            continue
+    if not drew:
+        plt.close(fig)
+        return None
+
+    fig.suptitle(
+        "mid-plane cross-sections — hole depth/type, wall thickness, internal features",
+        fontsize=13,
+    )
     fig.tight_layout()
     out_png = Path(out_png)
     fig.savefig(out_png, dpi=100)

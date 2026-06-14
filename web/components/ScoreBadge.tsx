@@ -5,10 +5,12 @@ export function ScoreBadge({
   score,
   threshold = 8,
   size = "md",
+  checksDisagree = false,
 }: {
   score: number;
   threshold?: number;
   size?: "sm" | "md" | "lg";
+  checksDisagree?: boolean;
 }) {
   const tone = scoreTone(score, threshold);
   const color = toneColor[tone];
@@ -27,8 +29,17 @@ export function ScoreBadge({
         borderColor: `color-mix(in srgb, ${color} 45%, transparent)`,
         background: `color-mix(in srgb, ${color} 12%, transparent)`,
       }}
-      title={`critic score ${score}/10 (accept ≥ ${threshold})`}
+      title={
+        checksDisagree
+          ? `critic scored ${score}/10 but a deterministic check FAILED — verify manually`
+          : `critic score ${score}/10 (accept ≥ ${threshold})`
+      }
     >
+      {checksDisagree && (
+        <span className="text-warn mr-0.5 text-[0.7em]" aria-label="deterministic checks disagree">
+          ⚠
+        </span>
+      )}
       {score}
       <span className="text-ink-faint text-[0.6em] font-normal">/10</span>
     </span>

@@ -14,6 +14,7 @@ dependencies = [
     "pydantic-ai-slim[openai,google]>=1.107.0",
     "python-dotenv>=1.2.2",
     "rich>=15.0.0",
+    "scipy>=1.14",  # trimesh cross-sectioning (renderer.render_sections)
     "trimesh>=4.12.2",
     "typer>=0.26.7",
 ]

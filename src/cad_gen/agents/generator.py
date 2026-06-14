@@ -26,6 +26,10 @@ class IterationWorkspace:
     timeout_s: float = 60
     max_attempts: int = 4
     executor: ExecutorFn = run_cad_code
+    # Optional target context: lets the execute tool report measured mass vs target.
+    density_kg_m3: float | None = None
+    target_mass_g: float | None = None
+    mass_tol_g: float | None = None
     attempts: list[ExecutionResult] = field(default_factory=list)
 
     @property
@@ -64,10 +68,26 @@ def build_generator_agent(model: str | Model) -> Agent[IterationWorkspace, str]:
         result = ws.execute(code)
         if result.success and result.metrics is not None:
             m = result.metrics
+            mass_line = ""
+            if ws.density_kg_m3 is not None:
+                mass = m.volume_mm3 * ws.density_kg_m3 * 1e-6
+                m.mass_g = mass
+                if ws.target_mass_g is not None:
+                    tol = ws.mass_tol_g if ws.mass_tol_g is not None else max(0.5, 0.01 * ws.target_mass_g)
+                    delta = mass - ws.target_mass_g
+                    verdict = (
+                        "within tolerance"
+                        if abs(delta) <= tol
+                        else f"{abs(delta):.2f} g too {'heavy' if delta > 0 else 'light'}"
+                    )
+                    mass_line = f"mass: {mass:.2f} g (target {ws.target_mass_g:.2f} ± {tol:.2f} g — {verdict})\n"
+                else:
+                    mass_line = f"mass: {mass:.2f} g (no target mass given)\n"
             return (
                 "SUCCESS — the model built and exported.\n"
                 f"volume: {m.volume_mm3:.1f} mm3\n"
                 f"bbox: {m.bbox_mm[0]:.2f} x {m.bbox_mm[1]:.2f} x {m.bbox_mm[2]:.2f} mm\n"
+                f"{mass_line}"
                 f"solids: {m.n_solids}, faces: {m.n_faces}, watertight: {m.is_watertight}\n"
                 "If these measurements contradict the spec, fix the code and run it "
                 "again; otherwise reply with a one-sentence summary of the part."

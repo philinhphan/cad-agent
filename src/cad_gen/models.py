@@ -1,6 +1,8 @@
 """Pydantic schemas shared across the sandbox, agents, and orchestrator."""
 
+from enum import Enum
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -20,6 +22,64 @@ class DrawingAttachment(BaseModel):
     data: bytes
 
 
+# --------------------------------------------------------------------------- #
+# Typed drawing target — a machine-checkable transcription of a drawing.
+# Every field is optional: drawings outside the TooTallToby set rarely state a
+# target mass/density, and a plain text spec has none of this. Absent fields make
+# the corresponding deterministic check SKIP rather than fail.
+# --------------------------------------------------------------------------- #
+class HoleType(str, Enum):
+    THRU = "thru"
+    BLIND = "blind"
+    COUNTERBORE = "counterbore"
+    COUNTERSINK = "countersink"
+
+
+class HoleTarget(BaseModel):
+    diameter_mm: float
+    type: HoleType = HoleType.THRU
+    count: int = 1
+    depth_mm: float | None = None  # blind depth
+    cbore_dia_mm: float | None = None
+    cbore_depth_mm: float | None = None
+    csk_dia_mm: float | None = None
+    csk_angle_deg: float | None = None
+    note: str | None = None  # verbatim callout, e.g. "2X Ø5 THRU ALL ⌴Ø10↧5"
+    uncertain: bool = False
+
+
+class FilletTarget(BaseModel):
+    radius_mm: float
+    count: int = 1
+    kind: Literal["fillet", "radius", "chamfer"] = "fillet"
+    note: str | None = None
+    uncertain: bool = False
+
+
+class AngleTarget(BaseModel):
+    angle_deg: float
+    reference: str | None = None
+    note: str | None = None
+    uncertain: bool = False
+
+
+class DrawingTarget(BaseModel):
+    """Structured transcription of an engineering drawing (all fields optional)."""
+
+    envelope_mm: tuple[float, float, float] | None = None  # overall L × W × H
+    material: str | None = None
+    density_kg_m3: float | None = None
+    target_mass_g: float | None = None  # None when redacted ('XXX g') — never invent
+    mass_tol_g: float | None = None
+    holes: list[HoleTarget] = []
+    fillets: list[FilletTarget] = []
+    angles: list[AngleTarget] = []
+    symmetry: list[str] = []  # e.g. ["mirror about YZ midplane (CL SYM)"]
+    unit_system: str = "MMGS"
+    notes: list[str] = []
+    raw_digest: str = ""  # the free-form Markdown digest (human-editable surface)
+
+
 class GeometryMetrics(BaseModel):
     """Measured properties of an executed CAD model."""
 
@@ -29,6 +89,7 @@ class GeometryMetrics(BaseModel):
     n_solids: int
     n_faces: int
     is_watertight: bool | None = None
+    mass_g: float | None = None  # volume × density, filled when a density is known
 
 
 class ExecutionResult(BaseModel):
@@ -44,6 +105,54 @@ class ExecutionResult(BaseModel):
     duration_s: float
 
 
+# --------------------------------------------------------------------------- #
+# Deterministic checks — LLM-independent, computed by the CAD kernel.
+# ADVISORY: they never override the critic's score for acceptance; they are shown
+# to the user, fed to the critic as evidence, and drive the generator's gradient.
+# --------------------------------------------------------------------------- #
+class CheckStatus(str, Enum):
+    PASS = "pass"
+    FAIL = "fail"
+    SKIP = "skip"  # no target data to compare against (general-drawing path)
+
+
+class Check(BaseModel):
+    name: str
+    status: CheckStatus
+    critical: bool = False
+    target: float | str | None = None
+    observed: float | str | None = None
+    delta: float | None = None
+    tolerance: float | None = None
+    message: str = ""
+
+
+class CheckReport(BaseModel):
+    checks: list[Check] = []
+
+    @property
+    def failures(self) -> list[Check]:
+        return [c for c in self.checks if c.status == CheckStatus.FAIL]
+
+    @property
+    def critical_failures(self) -> list[Check]:
+        return [c for c in self.checks if c.critical and c.status == CheckStatus.FAIL]
+
+    @property
+    def all_critical_pass(self) -> bool:
+        return not self.critical_failures
+
+
+class ChecklistItem(BaseModel):
+    """One enumerated requirement the critic checked against the drawing/target."""
+
+    requirement: str
+    target: str | None = None
+    observed: str | None = None
+    status: Literal["pass", "fail", "uncertain"] = "uncertain"
+    severity: Literal["critical", "major", "minor"] = "major"
+
+
 class Critique(BaseModel):
     """Structured visual critique returned by the critic agent."""
 
@@ -52,6 +161,29 @@ class Critique(BaseModel):
     issues: list[str]
     suggestions: list[str]
     summary: str
+    # Richer, enumerated evaluation (optional → backward compatible).
+    checklist: list[ChecklistItem] = []
+    dimensional_score: int | None = Field(default=None, ge=0, le=10)
+    feature_completeness_score: int | None = Field(default=None, ge=0, le=10)
+    proportion_score: int | None = Field(default=None, ge=0, le=10)
+
+    @model_validator(mode="after")
+    def _clamp_inconsistent_perfect(self) -> "Critique":
+        # Internal-consistency guard (NOT a deterministic override): a self-reported
+        # perfect 10 cannot coexist with the critic's OWN failing/uncertain checklist.
+        if self.score == 10 and any(
+            i.status in ("fail", "uncertain") for i in self.checklist
+        ):
+            self.score = 9
+        return self
+
+
+class Refutation(BaseModel):
+    """Verdict from the adversarial refuter: skeptic looking for any discrepancy."""
+
+    found_discrepancy: bool
+    discrepancies: list[str] = []
+    most_severe: str | None = None
 
 
 class IterationRecord(BaseModel):
@@ -60,12 +192,22 @@ class IterationRecord(BaseModel):
     index: int
     execution: ExecutionResult | None = None
     render_path: Path | None = None
+    section_path: Path | None = None
     critique: Critique | None = None
+    check_report: CheckReport | None = None
+    panel_critiques: list[Critique] = []
+    refutation: Refutation | None = None
     summary: str = ""
 
     @property
     def effective_score(self) -> int:
+        # Advisory gating: the score is the critic's verdict; deterministic checks
+        # never cap it. They surface as a UI warning + critic evidence + feedback.
         return self.critique.score if self.critique is not None else 0
+
+    @property
+    def passes_checks(self) -> bool:
+        return self.check_report is None or self.check_report.all_critical_pass
 
 
 class RunConfig(BaseModel):
@@ -78,6 +220,23 @@ class RunConfig(BaseModel):
     exec_timeout_s: float = 60
     max_exec_attempts_per_iteration: int = 4
     out_dir: Path = Path("runs")
+
+    # Critic robustness (defaults are the cheap single-critic path; the CLI/web
+    # surfaces turn the refuter on by default for users).
+    critic_samples: int = 1
+    critic_models: list[str] | None = None
+    enable_adversarial: bool = False
+    critic_aggregation: Literal["min", "median"] = "min"
+
+    # Rendering.
+    enable_sections: bool = True
+
+    # Optional known-target overrides (used when the answer is known or the drawing
+    # redacts it). All optional → general drawings with no known mass still work.
+    target_mass_g: float | None = None
+    mass_tol_g: float | None = None
+    envelope_mm: tuple[float, float, float] | None = None
+    density_kg_m3: float | None = None
 
     @model_validator(mode="after")
     def _default_critic_model(self) -> "RunConfig":
@@ -93,6 +252,7 @@ class RunResult(BaseModel):
     spec: str
     drawings: list[str] = []  # persisted input-drawing filenames under run_dir/input/
     interpretation: str | None = None  # final (possibly edited) extracted-dimensions digest
+    target: DrawingTarget | None = None  # typed transcription used for the checks
     best: IterationRecord
     iterations: list[IterationRecord]
     run_dir: Path

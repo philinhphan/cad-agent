@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -49,8 +50,28 @@ def generate(
     model: str = typer.Option(
         None, "--model", "-m", help="Generator model (default openai:gpt-5.5)."
     ),
-    critic_model: str = typer.Option(
-        None, "--critic-model", help="Vision critic model (default google:gemini-3.5-flash)."
+    critic_model: list[str] = typer.Option(
+        None,
+        "--critic-model",
+        help="Vision critic model; repeat for a multi-model panel (default google:gemini-3.5-flash).",
+    ),
+    critic_samples: int = typer.Option(
+        1, "--critic-samples", min=1, help="Independent critic samples to aggregate (conservative min)."
+    ),
+    adversarial: bool = typer.Option(
+        True, "--adversarial/--no-adversarial", help="Run an adversarial refuter each iteration."
+    ),
+    target_mass: float = typer.Option(
+        None, "--target-mass", help="Known target mass in grams — enables the deterministic mass check."
+    ),
+    mass_tol: float = typer.Option(
+        None, "--mass-tol", help="Mass tolerance in grams (default ±1 percent of target)."
+    ),
+    density: float = typer.Option(
+        None, "--density", help="Material density in kg/m^3 (overrides the drawing's value)."
+    ),
+    envelope: str = typer.Option(
+        None, "--envelope", help='Overall size "LxWxH" in mm — enables the envelope check.'
     ),
     timeout: float = typer.Option(
         60.0, "--timeout", help="Sandbox execution timeout per attempt (seconds)."
@@ -62,7 +83,9 @@ def generate(
     """Generate CAD geometry from a text spec and/or technical drawing via a self-refine loop."""
     load_dotenv(Path.cwd() / ".env")
     model = model or os.environ.get("CAD_GEN_MODEL")
-    critic_model = critic_model or os.environ.get("CAD_GEN_CRITIC_MODEL")
+    critic_models = list(critic_model) if critic_model else []
+    if not critic_models and os.environ.get("CAD_GEN_CRITIC_MODEL"):
+        critic_models = [os.environ["CAD_GEN_CRITIC_MODEL"]]
 
     spec = spec or ""
     if not spec.strip() and not drawing:
@@ -75,11 +98,23 @@ def generate(
         score_threshold=threshold,
         exec_timeout_s=timeout,
         out_dir=out,
+        critic_samples=critic_samples,
+        enable_adversarial=adversarial,
     )
     if model:
         config_kwargs["model"] = model
-    if critic_model:
-        config_kwargs["critic_model"] = critic_model
+    if len(critic_models) == 1:
+        config_kwargs["critic_model"] = critic_models[0]
+    elif len(critic_models) > 1:
+        config_kwargs["critic_models"] = critic_models
+    if target_mass is not None:
+        config_kwargs["target_mass_g"] = target_mass
+    if mass_tol is not None:
+        config_kwargs["mass_tol_g"] = mass_tol
+    if density is not None:
+        config_kwargs["density_kg_m3"] = density
+    if envelope:
+        config_kwargs["envelope_mm"] = _parse_envelope(envelope)
     config = RunConfig(**config_kwargs)
 
     _require_api_key(config)
@@ -183,8 +218,20 @@ _PROVIDER_KEYS = {
 }
 
 
+def _parse_envelope(text: str) -> tuple[float, float, float]:
+    """Parse an "LxWxH" envelope string (also accepts × or , separators)."""
+    nums = [p.strip() for p in re.split(r"[x×,]", text.lower()) if p.strip()]
+    if len(nums) != 3:
+        raise typer.BadParameter('envelope must be "LxWxH" in mm, e.g. 135x85x65')
+    try:
+        return tuple(float(n) for n in nums)  # type: ignore[return-value]
+    except ValueError as exc:
+        raise typer.BadParameter("envelope dimensions must be numbers") from exc
+
+
 def _require_api_key(config: RunConfig) -> None:
-    providers = {m.split(":", 1)[0] for m in (config.model, config.critic_model)}
+    models = [config.model, config.critic_model, *(config.critic_models or [])]
+    providers = {m.split(":", 1)[0] for m in models if m}
     missing = [
         (p, keys)
         for p in providers
@@ -210,8 +257,12 @@ def _print_iteration(record: IterationRecord) -> None:
         detail = "execution failed" if not executed else "no critique"
         if record.execution is not None and record.execution.error:
             detail = f"execution failed: {record.execution.error.splitlines()[-1]}"
+    note = ""
+    if record.check_report is not None and record.check_report.critical_failures:
+        names = ", ".join(c.name for c in record.check_report.critical_failures)
+        note = f"  [yellow]⚠ checks fail: {names}[/yellow]"
     console.print(
-        f"  iter {record.index}  score {record.effective_score}/10  {mark} {detail}"
+        f"  iter {record.index}  score {record.effective_score}/10  {mark} {detail}{note}"
     )
 
 

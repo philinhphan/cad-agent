@@ -3,14 +3,15 @@
 import { useState } from "react";
 import { motion } from "motion/react";
 import { apiUrl } from "@/lib/api";
-import { fmtBbox, fmtVolume } from "@/lib/score";
+import { fmtBbox, fmtVolume, hasCriticalFailure } from "@/lib/score";
 import type { IterationPayload } from "@/lib/types";
 import { ScoreBadge } from "./ScoreBadge";
 import { CritiquePanel } from "./CritiquePanel";
+import { CheckReportPanel } from "./CheckReportPanel";
 import { CodeBlock } from "./CodeBlock";
 import { StlViewer } from "./StlViewer";
 
-type Tab = "3d" | "renders" | "code";
+type Tab = "3d" | "renders" | "sections" | "code";
 
 export function IterationCard({
   payload,
@@ -52,7 +53,15 @@ export function IterationCard({
             </span>
           )}
         </div>
-        {record.critique && <ScoreBadge score={record.critique.score} threshold={threshold} />}
+        {record.critique && (
+          <ScoreBadge
+            score={record.critique.score}
+            threshold={threshold}
+            checksDisagree={
+              record.critique.score >= threshold && hasCriticalFailure(record.check_report)
+            }
+          />
+        )}
       </div>
 
       {/* metrics strip */}
@@ -60,6 +69,9 @@ export function IterationCard({
         <div className="flex flex-wrap gap-x-5 gap-y-1 border-b border-line px-4 py-2 text-[0.72rem] text-ink-dim">
           <Metric label="bbox" value={`${fmtBbox(metrics.bbox_mm)} mm`} />
           <Metric label="vol" value={fmtVolume(metrics.volume_mm3)} />
+          {metrics.mass_g != null && (
+            <Metric label="mass" value={`${metrics.mass_g.toFixed(1)} g`} />
+          )}
           <Metric label="solids" value={String(metrics.n_solids)} />
           <Metric
             label="watertight"
@@ -72,11 +84,14 @@ export function IterationCard({
         </div>
       )}
 
+      {/* advisory deterministic checks */}
+      {record.check_report && <CheckReportPanel report={record.check_report} />}
+
       {/* body */}
       {success ? (
         <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)]">
           <div className="flex flex-col">
-            <TabBar tab={tab} setTab={setTab} hasViews={!!urls.views} />
+            <TabBar tab={tab} setTab={setTab} hasViews={!!urls.views} hasSections={!!urls.sections} />
             <div className="relative h-[340px] overflow-hidden rounded-b-[var(--radius-tech)] border border-t-0 border-line bg-[#0c1016]">
               {tab === "3d" && urls.stl && <StlViewer url={apiUrl(urls.stl)} />}
               {tab === "renders" &&
@@ -89,6 +104,17 @@ export function IterationCard({
                   />
                 ) : (
                   <Empty>no render</Empty>
+                ))}
+              {tab === "sections" &&
+                (urls.sections ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={apiUrl(urls.sections)}
+                    alt={`cross-sections, iteration ${record.index}`}
+                    className="h-full w-full object-contain"
+                  />
+                ) : (
+                  <Empty>no sections</Empty>
                 ))}
               {tab === "code" && (
                 <div className="h-full overflow-auto">
@@ -122,14 +148,17 @@ function TabBar({
   tab,
   setTab,
   hasViews,
+  hasSections,
 }: {
   tab: Tab;
   setTab: (t: Tab) => void;
   hasViews: boolean;
+  hasSections: boolean;
 }) {
   const tabs: { id: Tab; label: string }[] = [
     { id: "3d", label: "3D" },
     ...(hasViews ? [{ id: "renders" as Tab, label: "Renders" }] : []),
+    ...(hasSections ? [{ id: "sections" as Tab, label: "Sections" }] : []),
     { id: "code", label: "Code" },
   ];
   return (
