@@ -19,7 +19,7 @@ export function RunView({
   const inputUrl = (name: string) => apiUrl(`/api/runs/${runId}/input/${name}`);
 
   return (
-    <div className="mx-auto max-w-[1100px] px-5 py-8">
+    <div className="w-full px-6 py-8 lg:px-10">
       {/* header */}
       <div className="panel panel-ticks p-5">
         <div className="flex items-start justify-between gap-4">
@@ -70,8 +70,10 @@ export function RunView({
                 <span className="tech-label">iter {String(bestIndex).padStart(2, "0")}</span>
               )}
             </div>
-            <div className="flex flex-1 flex-wrap justify-end gap-2">
-              {best?.urls.step && <Download href={apiUrl(best.urls.step)} label="STEP" />}
+            <div className="flex flex-1 flex-wrap items-center justify-end gap-2">
+              {best?.urls.step && (
+                <DownloadPrimary href={apiUrl(best.urls.step)} label="Download STEP" />
+              )}
               {best?.urls.stl && <Download href={apiUrl(best.urls.stl)} label="STL" />}
             </div>
           </div>
@@ -134,6 +136,22 @@ function Download({ href, label }: { href: string; label: string }) {
       className="rounded-[var(--radius-tech)] border border-line px-3 py-1.5 text-[0.75rem] uppercase tracking-wider text-ink-dim transition-colors hover:border-accent/50 hover:text-ink"
     >
       ↓ {label}
+    </a>
+  );
+}
+
+function DownloadPrimary({ href, label }: { href: string; label: string }) {
+  return (
+    <a
+      href={href}
+      download
+      className="inline-flex items-center gap-2 rounded-full bg-accent px-5 py-2.5 font-display text-[0.85rem] font-semibold text-white shadow-lg transition-opacity hover:opacity-90"
+    >
+      <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M12 4v12m0 0l-4-4m4 4l4-4" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M4 18v1a1 1 0 001 1h14a1 1 0 001-1v-1" strokeLinecap="round" />
+      </svg>
+      {label}
     </a>
   );
 }

@@ -235,7 +235,7 @@ export function SpecForm() {
           whileTap={{ scale: 0.97 }}
           onClick={primaryAction}
           disabled={!canStart}
-          className="self-end rounded-[var(--radius-tech)] bg-accent px-6 py-2.5 font-display text-base font-semibold uppercase tracking-wider text-[#1a0e05] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+          className="self-end rounded-[var(--radius-tech)] bg-accent px-6 py-2.5 font-display text-base font-semibold uppercase tracking-wider text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {interpreting
             ? "reading…"
@@ -339,7 +339,7 @@ function ReviewPanel({
           whileTap={{ scale: 0.97 }}
           onClick={onGenerate}
           disabled={submitting}
-          className="rounded-[var(--radius-tech)] bg-accent px-6 py-2.5 font-display text-base font-semibold uppercase tracking-wider text-[#1a0e05] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded-[var(--radius-tech)] bg-accent px-6 py-2.5 font-display text-base font-semibold uppercase tracking-wider text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {submitting ? "starting…" : "Generate ▸"}
         </motion.button>

@@ -1,12 +1,12 @@
 import type { Metadata } from "next";
-import { Saira_Condensed, JetBrains_Mono } from "next/font/google";
+import { Poppins, JetBrains_Mono } from "next/font/google";
 import Link from "next/link";
 import "./globals.css";
 
-const saira = Saira_Condensed({
-  variable: "--font-saira",
+const poppins = Poppins({
+  variable: "--font-poppins",
   subsets: ["latin"],
-  weight: ["500", "600", "700"],
+  weight: ["300", "400", "500", "600", "700", "800"],
 });
 
 const jetbrains = JetBrains_Mono({
@@ -15,9 +15,9 @@ const jetbrains = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "cad-gen · text-to-CAD self-refine",
+  title: "Kyrall — AI-powered 3D modeling",
   description:
-    "Generate CAD geometry from natural language and watch an AI self-refine loop critique and improve it, iteration by iteration.",
+    "Automating design for the physical world. Describe a part or drop an engineering drawing and generate real, self-refining CAD geometry.",
 };
 
 export default function RootLayout({
@@ -26,7 +26,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${saira.variable} ${jetbrains.variable} h-full`}
+      className={`${poppins.variable} ${jetbrains.variable} h-full`}
       suppressHydrationWarning
     >
       <body className="min-h-full flex flex-col">
@@ -40,17 +40,16 @@ export default function RootLayout({
 
 function SiteHeader() {
   return (
-    <header className="sticky top-0 z-40 border-b border-line bg-base/85 backdrop-blur-sm">
-      <div className="mx-auto flex h-14 max-w-[1400px] items-center justify-between px-5">
-        <Link href="/" className="group flex items-baseline gap-2.5">
-          <span className="tech-head text-xl text-ink group-hover:text-accent transition-colors">
-            CAD<span className="text-accent">/</span>GEN
-          </span>
-          <span className="tech-label hidden sm:block">text-to-cad · self-refine</span>
-        </Link>
-        <nav className="flex items-center gap-1 text-[0.8rem]">
-          <NavLink href="/">New&nbsp;run</NavLink>
+    <header className="sticky top-0 z-40 border-b border-line bg-base/70 backdrop-blur-md">
+      <div className="flex h-16 w-full items-center justify-end px-6 lg:px-10">
+        <nav className="flex items-center gap-2 text-[0.85rem]">
           <NavLink href="/runs">History</NavLink>
+          <Link
+            href="/"
+            className="rounded-full bg-accent px-4 py-2 font-display text-[0.85rem] font-semibold text-white transition-opacity hover:opacity-90"
+          >
+            Start building now
+          </Link>
         </nav>
       </div>
     </header>
@@ -61,7 +60,7 @@ function NavLink({ href, children }: { href: string; children: React.ReactNode }
   return (
     <Link
       href={href}
-      className="rounded-[var(--radius-tech)] px-3 py-1.5 uppercase tracking-wider text-ink-dim hover:bg-panel-2 hover:text-ink transition-colors"
+      className="rounded-full px-3.5 py-2 text-ink-dim transition-colors hover:bg-panel-2 hover:text-ink"
     >
       {children}
     </Link>
@@ -71,11 +70,9 @@ function NavLink({ href, children }: { href: string; children: React.ReactNode }
 function SiteFooter() {
   return (
     <footer className="border-t border-line">
-      <div className="mx-auto flex max-w-[1400px] flex-wrap items-center justify-between gap-2 px-5 py-3">
-        <span className="tech-label">cad-gen · pydantic-ai + cadquery</span>
-        <span className="tech-label">
-          subprocess sandbox — not a security boundary
-        </span>
+      <div className="flex w-full items-center justify-between px-6 py-5 lg:px-10">
+        <span className="font-display text-sm font-semibold text-ink-dim">Kyrall</span>
+        <span className="tech-label">automating design for the physical world</span>
       </div>
     </footer>
   );

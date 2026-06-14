@@ -1,33 +1,34 @@
 @import "tailwindcss";
 
 /* ------------------------------------------------------------------ *
- * cad-gen — "blueprint workshop" theme
- * near-black CAD viewport · amber highlight · cyan annotations
- * condensed technical headings · monospace instrument readout
+ * cad-gen — Kyrall-inspired theme
+ * dark navy base · bright blue highlight · violet accents
+ * Poppins display + body · monospace instrument readout
  * ------------------------------------------------------------------ */
 @theme {
-  --color-base: #0a0d12;
-  --color-panel: #10141b;
-  --color-panel-2: #161c25;
-  --color-line: #222b38;
-  --color-line-bright: #324154;
+  --color-base: #0a0912;
+  --color-panel: #141320;
+  --color-panel-2: #1c1b2b;
+  --color-line: #29283d;
+  --color-line-bright: #3d3b5c;
 
-  --color-ink: #d7e0ea;
-  --color-ink-dim: #8b98a8;
-  --color-ink-faint: #58636f;
+  --color-ink: #f4f5f8;
+  --color-ink-dim: #b7bac9;
+  --color-ink-faint: #74778a;
 
-  --color-accent: #ff8a3d; /* CAD highlight amber */
-  --color-accent-dim: #b85e26;
-  --color-viewport: #3fd9c9; /* annotation cyan */
+  --color-accent: #0088ff; /* Kyrall brand blue */
+  --color-accent-dim: #005a96;
+  --color-viewport: #6e6eff; /* violet accent */
 
-  --color-bad: #f4525f;
-  --color-warn: #ffb44e;
-  --color-good: #5fd38a;
+  --color-bad: #fb2c36;
+  --color-warn: #edb200;
+  --color-good: #22c55e;
 
-  --font-display: var(--font-saira), "Arial Narrow", sans-serif;
+  --font-display: var(--font-poppins), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-poppins), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-jetbrains), ui-monospace, monospace;
 
-  --radius-tech: 3px;
+  --radius-tech: 8px;
 }
 
 :root {
@@ -42,30 +43,20 @@ body {
   min-height: 100%;
   background-color: var(--color-base);
   color: var(--color-ink);
-  font-family: var(--font-mono);
-  font-feature-settings: "ss01", "cv01", "zero";
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
 }
 
-/* Blueprint grid + vignette, fixed behind everything */
+/* Soft brand glows, fixed behind everything (Kyrall-style ambient gradients) */
 body::before {
   content: "";
   position: fixed;
   inset: 0;
   z-index: -1;
   background-image:
-    linear-gradient(var(--color-line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--color-line) 1px, transparent 1px),
-    linear-gradient(rgba(34, 43, 56, 0.4) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(34, 43, 56, 0.4) 1px, transparent 1px);
-  background-size:
-    96px 96px,
-    96px 96px,
-    24px 24px,
-    24px 24px;
-  background-position: -1px -1px;
-  opacity: 0.35;
-  mask-image: radial-gradient(ellipse 120% 90% at 50% 0%, #000 35%, transparent 100%);
+    radial-gradient(70% 55% at 15% -5%, rgba(0, 136, 255, 0.1), transparent 70%),
+    radial-gradient(60% 50% at 95% 0%, rgba(110, 110, 255, 0.08), transparent 70%);
+  opacity: 0.8;
 }
 
 /* Typographic primitives ------------------------------------------------ */
@@ -76,17 +67,16 @@ body::before {
 .tech-label {
   font-family: var(--font-mono);
   font-size: 0.6875rem;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--color-ink-faint);
 }
 
 .tech-head {
   font-family: var(--font-display);
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  line-height: 0.95;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  line-height: 1.05;
 }
 
 /* Panel with engineering corner ticks ----------------------------------- */
@@ -97,27 +87,7 @@ body::before {
   border-radius: var(--radius-tech);
 }
 
-.panel-ticks::before,
-.panel-ticks::after {
-  content: "";
-  position: absolute;
-  width: 7px;
-  height: 7px;
-  border-color: var(--color-line-bright);
-  pointer-events: none;
-}
-.panel-ticks::before {
-  top: -1px;
-  left: -1px;
-  border-top: 1px solid;
-  border-left: 1px solid;
-}
-.panel-ticks::after {
-  bottom: -1px;
-  right: -1px;
-  border-bottom: 1px solid;
-  border-right: 1px solid;
-}
+/* .panel-ticks kept as a no-op for a cleaner, more minimal look. */
 
 /* Scrollbar ------------------------------------------------------------- */
 ::-webkit-scrollbar {

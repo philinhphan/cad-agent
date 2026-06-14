@@ -3,6 +3,9 @@
 
 # Generated run artifacts
 runs/
+# Next.js route (UI), not generated backend output
+!web/app/runs/
+!web/app/runs/**
 out_reproj_check/        # reproject drawing-eval output (cad_gen.reproject.eval_drawings)
 
 # Python
