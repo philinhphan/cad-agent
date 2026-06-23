@@ -261,6 +261,7 @@ annotated source of truth. Summary:
 | `CAD_GEN_VIEW_MODEL` | (critic default) | drawing view-locator (vision) |
 | `CAD_GEN_REASONING_EFFORT` | provider default | generator thinking effort (`minimal…xhigh`) |
 | `CAD_GEN_CRITIC_REASONING_EFFORT` | provider default | critic thinking effort |
+| `CAD_GEN_BMW` | – | set to `1` to route **all** agents through the BMW LLM gateway |
 | `CAD_GEN_WEB_ORIGINS` | `http://localhost:3000` | web CORS allow-list (comma-separated) |
 | `CAD_GEN_RUNS_DIR` | `runs` | artifacts root |
 | `FAL_KEY` | – | optional fal.ai showcase image |
@@ -270,6 +271,21 @@ annotated source of truth. Summary:
 Switching provider = change the `provider:` prefix and set the matching API key. Note: the
 CLI's key preflight only checks google/anthropic; other providers fail at call time if the
 key is missing.
+
+### BMW LLM API (BMW PCs only)
+
+On a BMW PC the public provider endpoints are blocked — only BMW's OpenAI-spec-compatible
+gateway is reachable. Point cad-gen at it either way:
+
+- **One switch:** `CAD_GEN_BMW=1` forces every agent through the gateway (default model
+  `openai/gpt-5-mini`). An explicit `bmw:<model>` env var still overrides per agent.
+- **Per agent:** prefix any model string with `bmw:`, e.g. `CAD_GEN_MODEL=bmw:openai/gpt-5-mini`
+  (model ids follow the BMW catalog: `openai/gpt-5-mini`, `openai/gpt-4o`,
+  `anthropic/claude-sonnet-4-5`, …).
+
+Set the credentials (`LLM_API_PROD_KEY`, plus `CLIENT_ID`+`CLIENT_SECRET` or a pre-fetched
+`LLM_ACCESS_TOKEN`) in `.env`; region and CA-cert overrides are documented in `.env.example`.
+cad-gen fetches/refreshes the WebEAM bearer token and downloads BMW's CA bundle automatically.
 
 ---
 

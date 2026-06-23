@@ -10,10 +10,12 @@ from pydantic_ai import Agent, BinaryContent
 from pydantic_ai.models import Model
 
 from cad_gen.agents.prompts import DRAWING_PARSER_INSTRUCTIONS
+from cad_gen.bmw import resolve_model
 from cad_gen.models import DrawingAttachment
 
 
 def build_drawing_parser_agent(model: str | Model) -> Agent[None, str]:
+    model = resolve_model(model)  # route `bmw:...` strings to the BMW gateway
     return Agent(model, output_type=str, instructions=DRAWING_PARSER_INSTRUCTIONS)
 
 

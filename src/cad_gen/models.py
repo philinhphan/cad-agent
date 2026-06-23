@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 DEFAULT_MODEL = "google:gemini-3.5-flash"  # generator
 DEFAULT_CRITIC_MODEL = "google:gemini-3.5-flash"  # vision critic
+# Used by every agent when the global BMW toggle (CAD_GEN_BMW) is set. See _coerce_model.
+BMW_DEFAULT_MODEL = "openai/gpt-5-mini"
 
 # Provider-agnostic reasoning/thinking effort levels (pydantic-ai's unified `thinking`
 # ModelSettings field). `None` leaves the provider default untouched.
@@ -29,6 +31,8 @@ def _replace_legacy_model(value: object, fallback: str) -> object:
     if not isinstance(value, str):
         return value
     stripped = value.strip()
+    if stripped.startswith("bmw:"):
+        return value  # BMW gateway models are an explicit opt-in — never rewrite them
     provider, _, model_name = stripped.partition(":")
     if provider in _LEGACY_PROVIDER_PREFIXES:
         return fallback
@@ -37,6 +41,24 @@ def _replace_legacy_model(value: object, fallback: str) -> object:
     if model_name.lower().startswith(_LEGACY_MODEL_PREFIX):
         return fallback
     return value
+
+
+def _bmw_enabled() -> bool:
+    """Global toggle: route every agent through the BMW LLM gateway (for BMW PCs)."""
+    return os.environ.get("CAD_GEN_BMW", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _coerce_model(value: object, fallback: str) -> object:
+    """Resolve a model setting, honoring the global BMW toggle.
+
+    Toggle ON: any non-`bmw:` string becomes `bmw:<BMW_DEFAULT_MODEL>` (so a locked-down BMW
+    PC works with one switch), while an explicit `bmw:<other>` is kept as a per-agent override
+    (e.g. a vision-capable critic). Toggle OFF: the unchanged legacy-rewrite behavior — and an
+    explicit `bmw:` prefix still routes to the gateway via _replace_legacy_model's guard.
+    """
+    if _bmw_enabled() and isinstance(value, str):
+        return value if value.strip().startswith("bmw:") else f"bmw:{BMW_DEFAULT_MODEL}"
+    return _replace_legacy_model(value, fallback)
 
 
 class DrawingAttachment(BaseModel):
@@ -227,7 +249,7 @@ class RunConfig(BaseModel):
     # load_dotenv runs) so CAD_GEN_MODEL / CAD_GEN_CRITIC_MODEL drive both the
     # CLI and the web backend. Precedence: explicit value -> env var -> constant.
     model: str = Field(
-        default_factory=lambda: _replace_legacy_model(
+        default_factory=lambda: _coerce_model(
             os.environ.get("CAD_GEN_MODEL") or DEFAULT_MODEL, DEFAULT_MODEL
         ),
         validate_default=True,
@@ -252,7 +274,7 @@ class RunConfig(BaseModel):
     # check (provider:model). Defaults to the vision-critic default; CAD_GEN_VIEW_MODEL
     # overrides. Only used in drawing mode.
     view_model: str = Field(
-        default_factory=lambda: _replace_legacy_model(
+        default_factory=lambda: _coerce_model(
             os.environ.get("CAD_GEN_VIEW_MODEL") or DEFAULT_CRITIC_MODEL,
             DEFAULT_CRITIC_MODEL,
         ),
@@ -288,12 +310,12 @@ class RunConfig(BaseModel):
             if info.field_name in {"critic_model", "view_model"}
             else DEFAULT_MODEL
         )
-        return _replace_legacy_model(value, fallback)
+        return _coerce_model(value, fallback)
 
     @model_validator(mode="after")
     def _default_critic_model(self) -> "RunConfig":
         if self.critic_model is None:
-            self.critic_model = _replace_legacy_model(
+            self.critic_model = _coerce_model(
                 os.environ.get("CAD_GEN_CRITIC_MODEL") or DEFAULT_CRITIC_MODEL,
                 DEFAULT_CRITIC_MODEL,
             )

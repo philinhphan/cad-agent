@@ -1,6 +1,9 @@
 # Secrets — never commit
 .env
 
+# Downloaded BMW CA bundle (fetched at runtime by cad_gen.bmw)
+BMW_Trusted_Certificates_Latest.pem
+
 # Generated run artifacts
 /runs/
 out_reproj_check/        # reproject drawing-eval output (cad_gen.reproject.eval_drawings)

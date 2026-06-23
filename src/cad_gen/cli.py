@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from rich.console import Console
 
 from cad_gen.agents.drawing_parser import build_drawing_parser_agent, interpret_drawing
+from cad_gen.bmw import require_bmw_credentials
 from cad_gen.imaging import media_type_for
 from cad_gen.models import DrawingAttachment, IterationRecord, RunConfig
 from cad_gen.orchestrator import generate_cad
@@ -187,6 +188,14 @@ def _require_api_key(config: RunConfig) -> None:
     providers = {
         m.split(":", 1)[0] for m in (config.model, config.critic_model, config.view_model)
     }
+    if "bmw" in providers and (bmw_missing := require_bmw_credentials()):
+        # BMW needs ALL of its creds (not any-one-of), so it is checked separately.
+        console.print(
+            f"[red bold]{', '.join(bmw_missing)} not set[/red bold] — required by the "
+            "BMW LLM API."
+        )
+        console.print("Add them to a .env file (see .env.example) or export them.")
+        raise typer.Exit(2)
     missing = [
         (p, keys)
         for p in providers

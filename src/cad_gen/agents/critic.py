@@ -7,6 +7,7 @@ from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
 from cad_gen.agents.prompts import CRITIC_INSTRUCTIONS
+from cad_gen.bmw import resolve_model
 from cad_gen.models import (
     ConstraintValidation,
     Critique,
@@ -21,6 +22,7 @@ from cad_gen.models import (
 def build_critic_agent(
     model: str | Model, *, reasoning_effort: ReasoningEffort | None = None
 ) -> Agent[None, Critique]:
+    model = resolve_model(model)  # route `bmw:...` strings to the BMW gateway
     # `thinking` is pydantic-ai's provider-agnostic reasoning knob; for a Gemini critic it
     # enables thinking before judging. When unset we pass no model_settings so the
     # provider's own default is left untouched.

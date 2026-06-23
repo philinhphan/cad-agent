@@ -9,6 +9,7 @@ from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
 from cad_gen.agents.prompts import GENERATOR_INSTRUCTIONS
+from cad_gen.bmw import resolve_model
 from cad_gen.models import ExecutionResult, IntrospectionResult, ReasoningEffort
 from cad_gen.sandbox.executor import introspect_cad_code, run_cad_code
 
@@ -130,6 +131,7 @@ def format_selector(data: dict) -> str:
 def build_generator_agent(
     model: str | Model, *, reasoning_effort: ReasoningEffort | None = None
 ) -> Agent[IterationWorkspace, str]:
+    model = resolve_model(model)  # route `bmw:...` strings to the BMW gateway
     # `thinking` is pydantic-ai's provider-agnostic reasoning-effort knob; when unset we
     # pass no model_settings so the provider's own default is left untouched.
     model_settings = ModelSettings(thinking=reasoning_effort) if reasoning_effort else None

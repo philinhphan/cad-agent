@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from pydantic_ai import Agent, BinaryContent
 from pydantic_ai.models import Model
 
+from cad_gen.bmw import resolve_model
 from cad_gen.models import DrawingAttachment
 
 VIEW_LOCATOR_INSTRUCTIONS = """\
@@ -55,6 +56,7 @@ class ViewLayout(BaseModel):
 
 
 def build_view_locator_agent(model: str | Model) -> Agent[None, ViewLayout]:
+    model = resolve_model(model)  # route `bmw:...` strings to the BMW gateway
     return Agent(model, output_type=ViewLayout, instructions=VIEW_LOCATOR_INSTRUCTIONS)
 
 
