@@ -48,10 +48,10 @@ def generate(
         8, "--threshold", "-t", min=0, max=10, help="Critic score needed to accept."
     ),
     model: str = typer.Option(
-        None, "--model", "-m", help="Generator model (default google:gemini-3.5-flash)."
+        None, "--model", "-m", help="Generator model (default openai:gpt-5-mini)."
     ),
     critic_model: str = typer.Option(
-        None, "--critic-model", help="Vision critic model (default google:gemini-3.5-flash)."
+        None, "--critic-model", help="Vision critic model (default openai:gpt-5-mini)."
     ),
     timeout: float = typer.Option(
         60.0, "--timeout", help="Sandbox execution timeout per attempt (seconds)."
@@ -177,6 +177,7 @@ def _edit_text(text: str) -> str:
 
 # provider prefix -> env var(s) that satisfy it (any one suffices).
 _PROVIDER_KEYS = {
+    "openai": ("OPENAI_API_KEY",),
     "google": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
     "google-gla": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
     "google-vertex": ("GOOGLE_API_KEY",),

@@ -12,7 +12,7 @@ from pydantic_ai.models.test import TestModel as FakeModel  # aliased so pytest 
 
 from cad_gen import bmw
 from cad_gen.bmw import BMWConfigError, _TokenCache, require_bmw_credentials, resolve_model
-from cad_gen.models import RunConfig, _replace_legacy_model
+from cad_gen.models import RunConfig, _coerce_model
 
 # Every env var the BMW path or the toggle reads — cleared before each test for hermeticity.
 _BMW_ENV_VARS = (
@@ -90,14 +90,15 @@ class TestResolveModel:
             resolve_model("bmw:openai/gpt-5-mini")
 
 
-class TestLegacyFilterGuard:
+class TestModelPassthrough:
     @pytest.mark.parametrize(
         "value",
-        ["bmw:openai/gpt-4o", "bmw:anthropic/claude-sonnet-4-5", "bmw:openai/gpt-5-mini"],
+        ["bmw:openai/gpt-4o", "bmw:anthropic/claude-sonnet-4-5", "openai:gpt-5-mini"],
     )
-    def test_bmw_prefix_survives_legacy_filter(self, value):
-        # Without the guard, the gpt-/openai legacy rewrite would clobber these.
-        assert _replace_legacy_model(value, "google:gemini-3.5-flash") == value
+    def test_coerce_model_passthrough_when_toggle_off(self, value):
+        # With CAD_GEN_BMW unset (cleared by the autouse fixture), _coerce_model is a
+        # no-op: bmw: prefixes are left for resolve_model and everything else stays as-is.
+        assert _coerce_model(value) == value
 
 
 class TestBmwToggle:
@@ -120,10 +121,10 @@ class TestBmwToggle:
         monkeypatch.setenv("CAD_GEN_MODEL", "google:gemini-3.5-flash")
         assert RunConfig().model == "bmw:openai/gpt-5-mini"
 
-    def test_toggle_off_keeps_gemini_defaults(self):
+    def test_toggle_off_keeps_default_models(self):
         cfg = RunConfig()
-        assert cfg.model == "google:gemini-3.5-flash"
-        assert cfg.critic_model == "google:gemini-3.5-flash"
+        assert cfg.model == "openai:gpt-5-mini"
+        assert cfg.critic_model == "openai:gpt-5-mini"
 
     def test_bmw_prefix_without_toggle(self, monkeypatch):
         monkeypatch.setenv("CAD_GEN_MODEL", "bmw:openai/gpt-4o")

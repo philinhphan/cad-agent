@@ -143,9 +143,9 @@ class TestRunConfig:
 
     def test_defaults(self):
         cfg = RunConfig()
-        assert cfg.model == "google:gemini-3.5-flash"
-        assert cfg.critic_model == "google:gemini-3.5-flash"
-        assert cfg.view_model == "google:gemini-3.5-flash"
+        assert cfg.model == "openai:gpt-5-mini"
+        assert cfg.critic_model == "openai:gpt-5-mini"
+        assert cfg.view_model == "openai:gpt-5-mini"
         assert cfg.max_iterations == 5
         assert cfg.score_threshold == 8
         assert cfg.exec_timeout_s == 60
@@ -189,7 +189,7 @@ class TestRunConfig:
     def test_critic_model_defaults_independently_of_generator(self):
         # The critic has its own default (vision model) — it does NOT inherit --model.
         cfg = RunConfig(model="anthropic:claude-x")
-        assert cfg.critic_model == "google:gemini-3.5-flash"
+        assert cfg.critic_model == "openai:gpt-5-mini"
 
     def test_critic_model_override_wins(self):
         cfg = RunConfig(model="anthropic:claude-x", critic_model="google:gemini-3.5-pro")
@@ -202,18 +202,17 @@ class TestRunConfig:
         assert cfg.model == "anthropic:claude-opus-4-8"
         assert cfg.critic_model == "anthropic:claude-opus-4-8"
 
-    def test_legacy_gpt_models_are_forced_to_gemini(self, monkeypatch):
-        provider = "op" + "enai"
-        model_name = "g" + "pt-5.5"
-        monkeypatch.setenv("CAD_GEN_MODEL", f"{provider}-responses:{model_name}")
-        monkeypatch.setenv("CAD_GEN_CRITIC_MODEL", f"{provider}:{model_name}")
-        monkeypatch.setenv("CAD_GEN_VIEW_MODEL", model_name)
+    def test_openai_models_pass_through_unchanged(self, monkeypatch):
+        # OpenAI is the default provider now — its model strings must reach the agent as-is.
+        monkeypatch.setenv("CAD_GEN_MODEL", "openai:gpt-5.5")
+        monkeypatch.setenv("CAD_GEN_CRITIC_MODEL", "openai:gpt-4o")
+        monkeypatch.setenv("CAD_GEN_VIEW_MODEL", "openai:gpt-5-mini")
 
         cfg = RunConfig()
 
-        assert cfg.model == "google:gemini-3.5-flash"
-        assert cfg.critic_model == "google:gemini-3.5-flash"
-        assert cfg.view_model == "google:gemini-3.5-flash"
+        assert cfg.model == "openai:gpt-5.5"
+        assert cfg.critic_model == "openai:gpt-4o"
+        assert cfg.view_model == "openai:gpt-5-mini"
 
     def test_view_model_resolves_from_env(self, monkeypatch):
         monkeypatch.setenv("CAD_GEN_VIEW_MODEL", "anthropic:claude-opus-4-8")
@@ -227,15 +226,13 @@ class TestRunConfig:
         assert cfg.model == "google:gemini-3.5-flash"
         assert cfg.critic_model == "google:gemini-3.5-pro"
 
-    def test_explicit_legacy_gpt_values_are_forced_to_gemini(self):
-        provider = "op" + "enai"
-        model_name = "g" + "pt-5.5"
+    def test_explicit_openai_values_pass_through_unchanged(self):
         cfg = RunConfig(
-            model=f"{provider}:{model_name}",
-            critic_model=f"{provider}-chat:{model_name}",
+            model="openai:gpt-5.5",
+            critic_model="openai:gpt-4o",
         )
-        assert cfg.model == "google:gemini-3.5-flash"
-        assert cfg.critic_model == "google:gemini-3.5-flash"
+        assert cfg.model == "openai:gpt-5.5"
+        assert cfg.critic_model == "openai:gpt-4o"
 
 
 class TestRunResult:

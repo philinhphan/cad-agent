@@ -51,8 +51,8 @@ def test_config_defaults_falls_back_to_builtins(monkeypatch):
     body = client.get("/api/config/defaults").json()
 
     assert body == {
-        "model": "google:gemini-3.5-flash",
-        "critic_model": "google:gemini-3.5-flash",
+        "model": "openai:gpt-5-mini",
+        "critic_model": "openai:gpt-5-mini",
     }
 
 

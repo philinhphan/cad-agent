@@ -21,8 +21,13 @@ dependencies = [
 
 [project.scripts]
 cad-gen = "cad_gen.cli:app"
+cad-gen-bench = "cad_gen.bench.cli:app"
 
 [project.optional-dependencies]
+bench = [
+    "huggingface-hub>=0.28",  # snapshot_download the CADGenBench inputs dataset
+    "pyyaml>=6.0",  # parse each sample's description.yaml
+]
 web = [
     "fal-client>=0.8.0",
     "fastapi>=0.115",

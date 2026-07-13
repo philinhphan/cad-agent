@@ -26,3 +26,11 @@ build/
 
 # Playwright MCP scratch
 .playwright-mcp/
+
+.claude/
+
+# Generated benchmark outputs (regenerable; large STL/STEP/PNG artifacts)
+/results/
+
+# CADGenBench dataset — cloned as its own git repo, fetched via cad-gen-bench
+/cadgenbench/

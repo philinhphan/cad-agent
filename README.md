@@ -9,7 +9,7 @@ threshold. An optional text description can be supplied alongside the drawing to
 disambiguate.
 
 Built on [PydanticAI](https://ai.pydantic.dev/), so it is **LLM-agnostic** — any
-supported provider works by changing one model string (Gemini by default). Ships with a
+supported provider works by changing one model string (OpenAI by default). Ships with a
 CLI, a Python library API, and a **Next.js + FastAPI web dashboard** that streams every
 iteration live and renders the generated solid in 3D in the browser.
 
@@ -48,6 +48,7 @@ drawing (+ optional text) ─► ORCHESTRATOR (outer loop: quality)
 - [How it works](#how-it-works)
 - [Project structure](#project-structure)
 - [Output artifacts](#output-artifacts)
+- [Benchmarking with CADGenBench](#benchmarking-with-cadgenbench)
 - [Testing & development](#testing--development)
 - [Deployment](#deployment)
 - [Security notes](#security-notes)
@@ -62,8 +63,8 @@ drawing (+ optional text) ─► ORCHESTRATOR (outer loop: quality)
 
 | Area | Tool | Role |
 |---|---|---|
-| **Agent framework** | [PydanticAI](https://ai.pydantic.dev/) (`pydantic-ai-slim[google]`) | Provider-agnostic LLM agents (generator, critic, drawing interpreter, view locator) with typed tool calling and structured outputs |
-| **LLM provider (default)** | [Google Gemini](https://ai.google.dev/) (`google:gemini-3.5-flash`) | Generator, vision critic, and drawing view-locator. Swappable per-agent to any PydanticAI provider (e.g. `anthropic:`, `openai:`) |
+| **Agent framework** | [PydanticAI](https://ai.pydantic.dev/) (`pydantic-ai-slim[google,openai]`) | Provider-agnostic LLM agents (generator, critic, drawing interpreter, view locator) with typed tool calling and structured outputs |
+| **LLM provider (default)** | [OpenAI](https://platform.openai.com/) (`openai:gpt-5-mini`) | Generator, vision critic, and drawing view-locator. Swappable per-agent to any PydanticAI provider (e.g. `google:`, `anthropic:`) |
 | **CAD kernel** | [CadQuery](https://cadquery.readthedocs.io/) + [OpenCASCADE / OCP](https://github.com/CadQuery/OCP) | Build solids from generated Python; export STEP, compute ground-truth metrics (volume, bbox, COM, face/solid count, watertightness) |
 | **Mesh / geometry** | [trimesh](https://trimesh.org/) | STL export and mesh handling |
 | **Rendering** | [NumPy](https://numpy.org/) z-buffer renderer | Headless 4-view composite PNG (iso/front/top/right) — no GPU/OSMesa required |
@@ -126,7 +127,7 @@ git clone <repo-url> cad-agent && cd cad-agent
 uv sync
 
 # 3. configure secrets
-cp .env.example .env        # then edit .env and paste your GEMINI_API_KEY
+cp .env.example .env        # then edit .env and paste your OPENAI_API_KEY
 ```
 
 That's it for the CLI and library. The CAD kernel (CadQuery / OpenCASCADE) and the
@@ -162,8 +163,8 @@ drawing; `--drawing` (repeatable for multi-sheet) is the authoritative input.
 |---|---|---|
 | `--max-iterations, -n` | 5 | outer self-refine iteration budget |
 | `--threshold, -t` | 8 | critic score (0–10) required to accept |
-| `--model, -m` | `google:gemini-3.5-flash` | generator model (`provider:name`) |
-| `--critic-model` | `google:gemini-3.5-flash` | vision critic model |
+| `--model, -m` | `openai:gpt-5-mini` | generator model (`provider:name`) |
+| `--critic-model` | `openai:gpt-5-mini` | vision critic model |
 | `--drawing` | – | path to a technical drawing (repeatable for multi-sheet) |
 | `--timeout` | 60 | sandbox seconds per execution attempt |
 | `--out, -o` | `runs/` | artifacts directory |
@@ -183,7 +184,7 @@ watch each iteration stream in live over SSE, **orbit the real generated geometr
 inspect the CadQuery code and critique, and browse run history. It talks to a thin FastAPI
 service that wraps `generate_cad`.
 
-Run both processes locally (needs `GEMINI_API_KEY` in `.env`):
+Run both processes locally (needs `OPENAI_API_KEY` in `.env`):
 
 ```bash
 # one-time: install the web extra + frontend deps
@@ -254,10 +255,10 @@ annotated source of truth. Summary:
 
 | Variable | Default | Applies to |
 |---|---|---|
-| `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) | – | **required** — generator, critic, view-locator |
-| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | – | only if you point an agent at that provider |
-| `CAD_GEN_MODEL` | `google:gemini-3.5-flash` | generator model |
-| `CAD_GEN_CRITIC_MODEL` | `google:gemini-3.5-flash` | vision critic model |
+| `OPENAI_API_KEY` | – | **required** — generator, critic, view-locator |
+| `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) / `ANTHROPIC_API_KEY` | – | only if you point an agent at that provider |
+| `CAD_GEN_MODEL` | `openai:gpt-5-mini` | generator model |
+| `CAD_GEN_CRITIC_MODEL` | `openai:gpt-5-mini` | vision critic model |
 | `CAD_GEN_VIEW_MODEL` | (critic default) | drawing view-locator (vision) |
 | `CAD_GEN_REASONING_EFFORT` | provider default | generator thinking effort (`minimal…xhigh`) |
 | `CAD_GEN_CRITIC_REASONING_EFFORT` | provider default | critic thinking effort |
@@ -269,7 +270,7 @@ annotated source of truth. Summary:
 | `NEXT_PUBLIC_API_BASE_URL` *(frontend, `web/.env`)* | `http://localhost:8000` | backend URL the UI calls |
 
 Switching provider = change the `provider:` prefix and set the matching API key. Note: the
-CLI's key preflight only checks google/anthropic; other providers fail at call time if the
+CLI's key preflight checks openai/google/anthropic; other providers fail at call time if the
 key is missing.
 
 ### BMW LLM API (BMW PCs only)
@@ -351,6 +352,11 @@ design. The end-to-end I/O of every stage is documented in **[`pipeline.md`](pip
 │   │   ├── drawing_primitives.py · eval_drawings.py
 │   │   └── README.md · DECISIONS.md
 │   ├── eval/checks.py         # evaluation helpers
+│   ├── bench/                 # CADGenBench harness (cad-gen-bench, optional `bench` extra)
+│   │   ├── dataset.py         #   fetch + parse benchmark samples from the HF Hub
+│   │   ├── adapter.py         #   sample → generate_cad → output.step (sample_to_request)
+│   │   ├── submission.py      #   assemble the leaderboard submission zip
+│   │   └── cli.py             #   Typer CLI: run · package
 │   └── web/                   # FastAPI backend (server.py, runs.py, schemas.py)
 ├── web/                       # Next.js + React 19 frontend (3D viewer, live SSE)
 ├── tests/                     # offline pytest suite (no API calls)
@@ -384,6 +390,51 @@ final/  model.py  model.stl  model.step  views.png  critique.json
 
 ---
 
+## Benchmarking with CADGenBench
+
+[CADGenBench](https://github.com/huggingface/cadgenbench) scores text/drawing→CAD
+systems against private ground truth (validity gate → shape / interface / topology
+metrics). The `cad-gen-bench` harness (in the optional `bench` extra) fetches the
+benchmark's generation samples, drives cad-gen over each drawing, and lays the winning
+STEP out in the submission structure the leaderboard expects — cad-gen and CADGenBench
+both speak STEP, so no format conversion is involved.
+
+```bash
+# install the bench extra (huggingface-hub + pyyaml)
+uv sync --extra bench
+
+# smoke-test: 2 samples, short budget, in parallel — eyeball before scaling up
+uv run --extra bench cad-gen-bench run --limit 2 --max-iterations 2 -o results/smoke
+
+# full run: all 49 generation samples (resumable — reuses any existing output.step)
+uv run --extra bench cad-gen-bench run -o results/cadgen-v1 -m openai:gpt-5.5 -n 5 -j 4
+
+# package into a leaderboard submission zip (meta.json + <sample>/output.step)
+uv run --extra bench cad-gen-bench package results/cadgen-v1 \
+    --submitter "Your Name" --name "cad-gen gpt-5.5 v1" --agree
+```
+
+Then upload the zip via the CADGenBench leaderboard Space's **Submit** tab; the Space
+runs scoring against the private ground truth and publishes the CAD Score, per-task-type
+breakdown, and validity rate.
+
+- **Inputs** are pulled from the public HF dataset (`HuggingAI4Engineering/cadgenbench-data`,
+  overridable via `CADGENBENCH_DATA_REPO` / `--data-repo`); the private ground truth is
+  never needed locally.
+- **Scope:** only `generation` samples (49 of them) are run — the drawing→CAD task cad-gen
+  is built for. `editing` samples are skipped (recorded "missing" / 0 by the grader).
+- Each sample's full self-refine trace lands beside its candidate under
+  `results/<run>/<sample>/cadgen/` for debugging; only `output.step` is packaged.
+- The `run` summary flags any candidate that isn't a single watertight solid — a cheap
+  local proxy for the benchmark's validity gate (which scores non-watertight / multi-solid
+  parts 0), using metrics cad-gen already computes.
+- **Where the benchmark framing lives:** `sample_to_request` in
+  `src/cad_gen/bench/adapter.py` composes the cad-gen spec (millimetres, drawing-authoritative,
+  single watertight solid). The benchmark descriptions are terse and identical, so this
+  preamble is the main textual lever on quality — edit it to taste.
+
+---
+
 ## Testing & development
 
 ```bash
@@ -407,7 +458,7 @@ key or network access.
 
   ```bash
   docker build -t cad-gen-api .
-  docker run -p 8000:8000 -e GEMINI_API_KEY=... \
+  docker run -p 8000:8000 -e OPENAI_API_KEY=... \
     -e CAD_GEN_WEB_ORIGINS=https://your-app.vercel.app \
     -v cadgen-runs:/data/runs cad-gen-api
   ```
