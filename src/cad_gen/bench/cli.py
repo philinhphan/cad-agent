@@ -1,9 +1,9 @@
 """CADGenBench harness CLI: ``cad-gen-bench run`` / ``package``.
 
-`run` fetches CADGenBench generation samples, drives cad-gen over each, and lays
-the winning STEP out as ``<out>/<sample>/output.step``. `package` bundles that
-directory into a leaderboard submission zip. Mirrors ``cadgenbench baseline
-run`` / ``package`` so the two feel familiar side by side.
+`run` fetches CADGenBench samples (generation and/or editing, via ``--task-type``),
+drives cad-gen over each, and lays the winning STEP out as ``<out>/<sample>/output.step``.
+`package` bundles that directory into a leaderboard submission zip. Mirrors
+``cadgenbench baseline run`` / ``package`` so the two feel familiar side by side.
 """
 from __future__ import annotations
 
@@ -28,7 +28,11 @@ console = Console()
 @app.command()
 def run(
     samples: str = typer.Option(
-        None, "--samples", help="Comma-separated sample ids to run (default: all generation samples)."
+        None, "--samples", help="Comma-separated sample ids to run (default: all samples)."
+    ),
+    task_type: str = typer.Option(
+        "all", "--task-type",
+        help="Which family to run: all (complete submission), generation, or editing.",
     ),
     limit: int = typer.Option(
         None, "--limit", min=1, help="Run at most this many samples (after --samples filter)."
@@ -59,6 +63,11 @@ def run(
     """Generate CADGenBench candidates with cad-gen."""
     load_dotenv(Path.cwd() / ".env")
 
+    task_type = task_type.strip().lower()
+    if task_type not in {"all", "generation", "editing"}:
+        console.print("[red bold]--task-type must be one of: all, generation, editing[/red bold]")
+        raise typer.Exit(2)
+
     config_kwargs: dict = dict(
         max_iterations=max_iterations, score_threshold=threshold, reproject=not no_reproject
     )
@@ -72,11 +81,13 @@ def run(
     console.print("[bold]cad-gen-bench[/bold]  fetching CADGenBench inputs from the Hub…")
     inputs_dir = resolve_inputs_dir(data_repo)
     names = [s.strip() for s in samples.split(",") if s.strip()] if samples else None
-    all_samples = load_samples(inputs_dir, task_type="generation", names=names)
+    # "all" loads both families (task_type=None); "generation"/"editing" filter to one.
+    family = None if task_type == "all" else task_type
+    all_samples = load_samples(inputs_dir, task_type=family, names=names)
     if limit is not None:
         all_samples = all_samples[:limit]
     if not all_samples:
-        console.print("[red bold]No generation samples matched.[/red bold]")
+        console.print(f"[red bold]No {task_type} samples matched.[/red bold]")
         raise typer.Exit(1)
 
     n_pending = sum(1 for s in all_samples if not (out / s.name / "output.step").exists())
@@ -94,15 +105,17 @@ def run(
                 overwrite=overwrite, on_result=_progress)
     )
 
-    # A full (unfiltered) run is a complete submission: the leaderboard requires the
-    # folder set to match the whole dataset, so materialize empty folders for every
-    # non-generation sample (recorded "missing" / 0). Skipped for smoke subsets.
-    if names is None and limit is None:
+    # A full, unfiltered run of ALL task types is a complete submission: the leaderboard
+    # requires the folder set to match the whole dataset, so materialize empty folders for
+    # any sample that produced no candidate (a generation/editing failure) — the grader
+    # records them "missing" / 0. Skipped for smoke subsets or a single-family run, which
+    # are not complete submissions.
+    if names is None and limit is None and task_type == "all":
         all_names = [s.name for s in load_samples(inputs_dir, task_type=None)]
         n_stub = ensure_all_sample_dirs(out, all_names)
         if n_stub:
             console.print(
-                f"[dim]added {n_stub} empty folder(s) for non-generation samples "
+                f"[dim]added {n_stub} empty folder(s) for samples that produced no geometry "
                 "(scored 'missing'/0) so the submission matches the full dataset[/dim]"
             )
 

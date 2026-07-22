@@ -131,3 +131,39 @@ def test_infinite_loop_times_out(tmp_path):
 
     assert not r.success
     assert "timed out" in r.error.lower()
+
+
+PLAIN_BOX = """
+import cadquery as cq
+
+result = cq.Workplane("XY").box(20, 20, 20)
+"""
+
+EDIT_IMPORTS_BASE = """
+import cadquery as cq
+
+base = cq.importers.importStep("input.step")
+tool = cq.Workplane("XY").cylinder(30, 3)
+result = base.cut(tool)
+"""
+
+
+def test_seed_files_enables_step_import(tmp_path):
+    """The editing seam: a file seeded into the run dir is loadable by the code.
+
+    Export a base box, then run editing code that importStep()s the seeded
+    input.step and cuts it — proving `importStep("input.step")` resolves against
+    the subprocess cwd because seed_files wrote the file there first.
+    """
+    base = run_cad_code(PLAIN_BOX, tmp_path / "base")
+    assert base.success, base.error
+    step_bytes = base.step_path.read_bytes()
+
+    r = run_cad_code(
+        EDIT_IMPORTS_BASE, tmp_path / "edit", seed_files={"input.step": step_bytes}
+    )
+
+    assert r.success, r.error
+    assert (r.step_path.parent / "input.step").exists()  # seeded into the working dir
+    assert r.metrics.n_solids == 1
+    assert r.metrics.volume_mm3 < 20**3  # the cut removed material from the base box

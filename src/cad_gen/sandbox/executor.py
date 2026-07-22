@@ -18,12 +18,25 @@ INTROSPECT_HARNESS = Path(__file__).parent / "introspect.py"
 _TRACEBACK_TAIL_CHARS = 3000
 
 
-def run_cad_code(code: str, out_dir: Path, timeout_s: float = 60) -> ExecutionResult:
-    """Execute `code` via the harness subprocess; artifacts land in `out_dir`."""
+def run_cad_code(
+    code: str,
+    out_dir: Path,
+    timeout_s: float = 60,
+    *,
+    seed_files: dict[str, bytes] | None = None,
+) -> ExecutionResult:
+    """Execute `code` via the harness subprocess; artifacts land in `out_dir`.
+
+    `seed_files` (name -> bytes) are written into `out_dir` before the subprocess
+    runs — the harness executes with cwd=out_dir, so editing code can load a seeded
+    base model with e.g. ``cq.importers.importStep("input.step")``.
+    """
     # Resolve before anything else: the subprocess runs with cwd=out_dir, so
     # relative paths in its argv would resolve against the wrong base.
     out_dir = Path(out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+    for name, data in (seed_files or {}).items():
+        (out_dir / name).write_bytes(data)
     code_file = out_dir / "model.py"
     code_file.write_text(code)
 
@@ -86,7 +99,12 @@ def run_cad_code(code: str, out_dir: Path, timeout_s: float = 60) -> ExecutionRe
 
 
 def introspect_cad_code(
-    code: str, query: dict, out_dir: Path, timeout_s: float = 30
+    code: str,
+    query: dict,
+    out_dir: Path,
+    timeout_s: float = 30,
+    *,
+    seed_files: dict[str, bytes] | None = None,
 ) -> IntrospectionResult:
     """Probe the geometry `code` builds WITHOUT exporting (see introspect.py).
 
@@ -94,9 +112,14 @@ def introspect_cad_code(
     {"mode": "selector", "target": "edges"|"faces", "selector": "<sel>"}.
     Returns ok=False with the traceback when the *code* fails to build; a bad
     *selector* comes back ok=True with the diagnostic inside `data`.
+
+    `seed_files` mirrors :func:`run_cad_code` — a probe over editing code must see
+    the same seeded base model (e.g. ``input.step``) the real execution does.
     """
     out_dir = Path(out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+    for name, data in (seed_files or {}).items():
+        (out_dir / name).write_bytes(data)
     code_file = out_dir / "model.py"
     code_file.write_text(code)
     query_file = out_dir / "query.json"

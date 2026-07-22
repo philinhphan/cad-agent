@@ -395,9 +395,10 @@ final/  model.py  model.stl  model.step  views.png  critique.json
 [CADGenBench](https://github.com/huggingface/cadgenbench) scores text/drawing→CAD
 systems against private ground truth (validity gate → shape / interface / topology
 metrics). The `cad-gen-bench` harness (in the optional `bench` extra) fetches the
-benchmark's generation samples, drives cad-gen over each drawing, and lays the winning
-STEP out in the submission structure the leaderboard expects — cad-gen and CADGenBench
-both speak STEP, so no format conversion is involved.
+benchmark samples, drives cad-gen over each, and lays the winning STEP out in the
+submission structure the leaderboard expects — cad-gen and CADGenBench both speak STEP,
+so no format conversion is involved. Both task families are supported: **generation**
+(drawing→CAD) and **editing** (modify a provided `input.step` per an instruction).
 
 ```bash
 # install the bench extra (huggingface-hub + pyyaml)
@@ -406,8 +407,11 @@ uv sync --extra bench
 # smoke-test: 2 samples, short budget, in parallel — eyeball before scaling up
 uv run --extra bench cad-gen-bench run --limit 2 --max-iterations 2 -o results/smoke
 
-# full run: all 49 generation samples (resumable — reuses any existing output.step)
+# full run: all 81 samples (49 generation + 32 editing), resumable — reuses any output.step
 uv run --extra bench cad-gen-bench run -o results/cadgen-v1 -m openai:gpt-5.5 -n 5 -j 4
+
+# narrow to one family (e.g. iterate on editing): --task-type generation|editing|all
+uv run --extra bench cad-gen-bench run --task-type editing -o results/edits
 
 # package into a leaderboard submission zip (meta.json + <sample>/output.step)
 uv run --extra bench cad-gen-bench package results/cadgen-v1 \
@@ -421,17 +425,24 @@ breakdown, and validity rate.
 - **Inputs** are pulled from the public HF dataset (`HuggingAI4Engineering/cadgenbench-data`,
   overridable via `CADGENBENCH_DATA_REPO` / `--data-repo`); the private ground truth is
   never needed locally.
-- **Scope:** only `generation` samples (49 of them) are run — the drawing→CAD task cad-gen
-  is built for. `editing` samples are skipped (recorded "missing" / 0 by the grader).
+- **Scope:** a plain `run` executes all 81 samples (a complete submission). `--task-type
+  generation|editing|all` (default `all`) narrows it. **Editing** samples seed their
+  `input.step` into the sandbox so the generator loads it with
+  `cq.importers.importStep("input.step")`, applies the requested change, and preserves the
+  rest — the shape axis is renormalized against the no-op baseline, so a minimal correct
+  edit is what scores. The base model's `renders/` are attached to the generator and a
+  before/after-aware critic as reference. Editing cannot be self-scored locally (the no-op
+  baseline lives in the private ground truth).
 - Each sample's full self-refine trace lands beside its candidate under
   `results/<run>/<sample>/cadgen/` for debugging; only `output.step` is packaged.
 - The `run` summary flags any candidate that isn't a single watertight solid — a cheap
   local proxy for the benchmark's validity gate (which scores non-watertight / multi-solid
   parts 0), using metrics cad-gen already computes.
-- **Where the benchmark framing lives:** `sample_to_request` in
-  `src/cad_gen/bench/adapter.py` composes the cad-gen spec (millimetres, drawing-authoritative,
-  single watertight solid). The benchmark descriptions are terse and identical, so this
-  preamble is the main textual lever on quality — edit it to taste.
+- **Where the benchmark framing lives:** `sample_to_request` / `sample_to_edit_request` in
+  `src/cad_gen/bench/adapter.py` compose the cad-gen spec (millimetres, single watertight
+  solid; drawing-authoritative for generation, minimal-change for editing). The benchmark
+  descriptions are terse, so this preamble is the main textual lever on quality — edit it
+  to taste.
 
 ---
 

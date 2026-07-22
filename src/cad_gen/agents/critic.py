@@ -6,7 +6,7 @@ from pydantic_ai import Agent, BinaryContent
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
-from cad_gen.agents.prompts import CRITIC_INSTRUCTIONS
+from cad_gen.agents.prompts import CRITIC_INSTRUCTIONS, EDITING_CRITIC_INSTRUCTIONS
 from cad_gen.bmw import resolve_model
 from cad_gen.models import (
     ConstraintValidation,
@@ -20,17 +20,22 @@ from cad_gen.models import (
 
 
 def build_critic_agent(
-    model: str | Model, *, reasoning_effort: ReasoningEffort | None = None
+    model: str | Model,
+    *,
+    reasoning_effort: ReasoningEffort | None = None,
+    editing: bool = False,
 ) -> Agent[None, Critique]:
     model = resolve_model(model)  # route `bmw:...` strings to the BMW gateway
     # `thinking` is pydantic-ai's provider-agnostic reasoning knob; for a Gemini critic it
     # enables thinking before judging. When unset we pass no model_settings so the
     # provider's own default is left untouched.
     model_settings = ModelSettings(thinking=reasoning_effort) if reasoning_effort else None
+    # Editing mode swaps in a rubric that compares before/after and penalizes no-ops.
+    instructions = EDITING_CRITIC_INSTRUCTIONS if editing else CRITIC_INSTRUCTIONS
     return Agent(
         model,
         output_type=Critique,
-        instructions=CRITIC_INSTRUCTIONS,
+        instructions=instructions,
         model_settings=model_settings,
     )
 
@@ -57,18 +62,36 @@ async def run_critique(
     reprojection: ReprojectionReport | None = None,
     constraints: DrawingConstraints | None = None,
     constraint_validation: ConstraintValidation | None = None,
+    reference_images: list[DrawingAttachment] | None = None,
+    editing: bool = False,
 ) -> Critique:
     metrics_json = (
         execution.metrics.model_dump_json(indent=2) if execution.metrics else "{}"
     )
     drawings = drawings or []
+    reference_images = reference_images or []
+    spec_heading = "Edit instruction" if editing else "Specification"
     spec_block = (
-        f"## Specification\n{spec}\n\n"
+        f"## {spec_heading}\n{spec}\n\n"
         if spec.strip()
         else "## Specification\n(none — the part is defined by the attached drawing.)\n\n"
     )
     overlay_bytes = _overlay_bytes(reprojection)
-    if drawings:
+    if editing:
+        image_note = (
+            "The FIRST attached image shows isometric / front / top / right views of the "
+            "EDITED (after) model. "
+            + (
+                "The following image(s) show the ORIGINAL (before) model. Compare them: the "
+                "difference should be exactly the requested edit. Grade whether the change "
+                "was applied correctly AND everything else was preserved; a model "
+                "indistinguishable from the before is a no-op and scores 0-1."
+                if reference_images
+                else "Judge, from the code and measurements, whether the requested edit was "
+                "applied while all other geometry was preserved; a no-op scores 0-1."
+            )
+        )
+    elif drawings:
         image_note = (
             "The FIRST attached image shows isometric / front / top / right views of the "
             "produced geometry. The next image(s) are the ORIGINAL engineering drawing(s) "
@@ -117,6 +140,11 @@ async def run_critique(
         prompt,
         BinaryContent(data=render_path.read_bytes(), media_type="image/png"),
     ]
+    # Editing: the base-model (before) renders follow the after-render. Generation:
+    # the original drawing(s) do. They are mutually exclusive in practice.
+    content.extend(
+        BinaryContent(data=d.data, media_type=d.media_type) for d in reference_images
+    )
     content.extend(
         BinaryContent(data=d.data, media_type=d.media_type) for d in drawings
     )

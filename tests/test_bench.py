@@ -17,6 +17,7 @@ from cad_gen.bench.adapter import (
     ensure_all_sample_dirs,
     output_step_path,
     run_sample,
+    sample_to_edit_request,
     sample_to_request,
 )
 from cad_gen.bench.dataset import load_samples
@@ -46,6 +47,25 @@ def _make_sample(dir: Path, name: str, body: str, *, with_png: bool = False) -> 
     (sample_dir / "description.yaml").write_text(body)
     if with_png:
         (sample_dir / "input.png").write_bytes(FIXTURE_PNG.read_bytes())
+    return sample_dir
+
+
+def _make_edit_sample(
+    dir: Path, name: str, instruction: str = "Move the pocket wall inward by 6mm.",
+    *, with_renders: bool = True,
+) -> Path:
+    """An editing fixture: description.yaml (task_type: editing) + input.step + renders/."""
+    sample_dir = dir / name
+    sample_dir.mkdir(parents=True)
+    (sample_dir / "description.yaml").write_text(
+        f"description: {instruction}\ntask_type: editing\ninput_files:\n  - input.step\n"
+    )
+    (sample_dir / "input.step").write_bytes(b"ISO-10303-21;\nfake base step\n")
+    if with_renders:
+        renders = sample_dir / "renders"
+        renders.mkdir()
+        for view in ("iso.png", "front.png"):
+            (renders / view).write_bytes(FIXTURE_PNG.read_bytes())
     return sample_dir
 
 
@@ -119,6 +139,41 @@ def test_sample_to_request_text_only_when_no_image(tmp_path):
     assert drawings == []
 
 
+# ── editing samples: base STEP + render accessors, edit request mapping ─────
+
+def test_editing_sample_step_and_render_paths(tmp_path):
+    sample_dir = _make_edit_sample(tmp_path, "201")
+    sample = load_samples(tmp_path, task_type="editing")[0]
+
+    assert sample.task_type == "editing"
+    assert sample.image_path is None  # no engineering drawing for editing
+    assert sample.step_path == sample_dir / "input.step"
+    assert [p.name for p in sample.render_paths] == ["front.png", "iso.png"]  # sorted
+
+
+def test_sample_to_edit_request_builds_edit_request(tmp_path):
+    _make_edit_sample(tmp_path, "201", "Bring the +X pocket walls inward by 6mm.")
+    sample = load_samples(tmp_path, task_type="editing")[0]
+
+    spec, base_step, reference_images = sample_to_edit_request(sample)
+
+    assert "Bring the +X pocket walls inward by 6mm." in spec
+    assert "input.step" in spec and "millimetres" in spec  # editing framing
+    assert base_step == b"ISO-10303-21;\nfake base step\n"
+    assert [img.media_type for img in reference_images] == ["image/png", "image/png"]
+    assert all(img.data for img in reference_images)
+
+
+def test_sample_to_edit_request_raises_without_step(tmp_path):
+    # An "editing" sample whose input.step is absent must raise (recorded as the
+    # sample's error by run_sample, not silently mapped to a generation request).
+    _make_sample(tmp_path, "201", "description: edit me.\ntask_type: editing\n")
+    sample = load_samples(tmp_path, task_type="editing")[0]
+
+    with pytest.raises(ValueError, match="no input STEP"):
+        sample_to_edit_request(sample)
+
+
 # ── run_sample: STEP layout, resume, errors (generate_cad stubbed) ─────────
 
 async def test_run_sample_writes_output_step(tmp_path, monkeypatch):
@@ -183,6 +238,80 @@ async def test_run_sample_survives_generation_error(tmp_path, monkeypatch):
 
     assert not outcome.step_written
     assert outcome.error and "model exploded" in outcome.error
+
+
+async def test_run_sample_editing_seeds_base_and_writes_output(tmp_path, monkeypatch):
+    """An editing sample routes through the base_step/reference_images path and
+    still lands its candidate at <out>/<name>/output.step."""
+    _make_edit_sample(tmp_path / "inputs", "201", "Bore a hole through the boss.")
+    sample = load_samples(tmp_path / "inputs", task_type="editing")[0]
+    out_root = tmp_path / "results"
+    captured: dict = {}
+
+    async def fake_generate_cad(spec, config, *, base_step=None, reference_images=None, **kw):
+        captured["spec"] = spec
+        captured["base_step"] = base_step
+        captured["reference_images"] = reference_images
+        captured["drawings"] = kw.get("drawings")
+        return _fake_run_result(config.out_dir / "20260706_000000")
+
+    monkeypatch.setattr("cad_gen.bench.adapter.generate_cad", fake_generate_cad)
+
+    outcome = await run_sample(sample, config=RunConfig(), out_root=out_root)
+
+    assert output_step_path(out_root, "201").is_file()
+    assert outcome.step_written and outcome.task_type == "editing"
+    # dispatched as an edit, not a generation: base model + before-renders passed, no drawings
+    assert captured["base_step"] == b"ISO-10303-21;\nfake base step\n"
+    assert len(captured["reference_images"]) == 2
+    assert captured["drawings"] is None
+    assert "Bore a hole through the boss." in captured["spec"]
+
+
+# ── CLI: run --task-type dispatch (run_all stubbed, offline) ───────────────
+
+def _patch_run_cli(monkeypatch, inputs_dir: Path) -> dict:
+    """Stub the network/API/generation seams of `run`; capture the selected samples."""
+    captured: dict = {}
+
+    async def fake_run_all(samples, **kw):
+        captured["names"] = [s.name for s in samples]
+        return []
+
+    monkeypatch.setattr(bench_cli, "resolve_inputs_dir", lambda repo=None: inputs_dir)
+    monkeypatch.setattr(bench_cli, "_require_api_key", lambda config: None)
+    monkeypatch.setattr(bench_cli, "run_all", fake_run_all)
+    return captured
+
+
+def test_run_cli_task_type_filters(tmp_path, monkeypatch):
+    inputs = tmp_path / "inputs"
+    _make_sample(inputs, "101", "description: gen.\n")
+    _make_edit_sample(inputs, "201")
+    captured = _patch_run_cli(monkeypatch, inputs)
+
+    r = runner.invoke(bench_cli.app, ["run", "--task-type", "editing", "-o", str(tmp_path / "e")])
+    assert r.exit_code == 0, r.output
+    assert captured["names"] == ["201"]
+
+    r = runner.invoke(bench_cli.app, ["run", "--task-type", "generation", "-o", str(tmp_path / "g")])
+    assert r.exit_code == 0, r.output
+    assert captured["names"] == ["101"]
+
+    r = runner.invoke(bench_cli.app, ["run", "-o", str(tmp_path / "all")])  # default: all
+    assert r.exit_code == 0, r.output
+    assert set(captured["names"]) == {"101", "201"}
+
+
+def test_run_cli_rejects_bad_task_type(tmp_path, monkeypatch):
+    inputs = tmp_path / "inputs"
+    _make_sample(inputs, "101", "description: gen.\n")
+    _patch_run_cli(monkeypatch, inputs)
+
+    r = runner.invoke(bench_cli.app, ["run", "--task-type", "bogus", "-o", str(tmp_path / "o")])
+
+    assert r.exit_code == 2
+    assert "task-type must be one of" in _plain(r.output)
 
 
 # ── full-dataset folder completeness (leaderboard requires it) ─────────────

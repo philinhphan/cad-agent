@@ -1,11 +1,13 @@
 """Drive cad-gen over CADGenBench samples and lay out submission candidates.
 
-For each generation sample we build a cad-gen request (text spec + optional
-drawing), run the self-refine loop via :func:`cad_gen.generate_cad`, and copy
-the winning STEP to ``<out_root>/<sample>/output.step`` — the layout the
-CADGenBench packager and grader expect. cad-gen's full run trace is kept
-alongside under ``<out_root>/<sample>/cadgen/`` for debugging; only
-``output.step`` is ever packaged.
+Each sample is dispatched by ``task_type``. A *generation* sample becomes a text
+spec + optional drawing; an *editing* sample seeds its ``input.step`` into the
+sandbox and frames the request as a minimal modification (see
+:func:`sample_to_edit_request`). Either way we run the self-refine loop via
+:func:`cad_gen.generate_cad` and copy the winning STEP to
+``<out_root>/<sample>/output.step`` — the layout the CADGenBench packager and
+grader expect. cad-gen's full run trace is kept alongside under
+``<out_root>/<sample>/cadgen/`` for debugging; only ``output.step`` is packaged.
 """
 from __future__ import annotations
 
@@ -112,6 +114,43 @@ def sample_to_request(sample: BenchSample) -> tuple[str, list[DrawingAttachment]
     return spec, drawings
 
 
+def sample_to_edit_request(
+    sample: BenchSample,
+) -> tuple[str, bytes, list[DrawingAttachment]]:
+    """Map a CADGenBench editing sample onto a cad-gen editing request.
+
+    Returns ``(spec, base_step_bytes, reference_images)`` for
+    ``generate_cad(spec, ..., base_step=..., reference_images=...)``. The base model
+    (``input.step``) is seeded into the sandbox by the orchestrator; the ``renders/``
+    previews become before-state reference images. Raises if the sample has no STEP
+    attachment (``run_sample`` records that as the sample's error, not a batch abort).
+    """
+    step = sample.step_path
+    if step is None:
+        raise ValueError(f"editing sample {sample.name!r} has no input STEP in {sample.input_files}")
+    base_step = step.read_bytes()
+
+    reference_images: list[DrawingAttachment] = []
+    for path in sample.render_paths:
+        data = path.read_bytes()
+        media = media_type_for(path.name, data)
+        if media is not None:
+            reference_images.append(
+                DrawingAttachment(filename=path.name, media_type=media, data=data)
+            )
+
+    # Frame the edit: the instruction is authoritative, the change must be minimal, and
+    # the benchmark validity gate (single watertight solid) still applies.
+    spec = (
+        f"{sample.description}\n\n"
+        "Apply the modification described above to the base model provided as `input.step` "
+        "in your working directory. All dimensions are in millimetres. Change ONLY what the "
+        "instruction requires and preserve every other feature of the base model exactly. "
+        "Produce a single watertight solid (one closed manifold)."
+    )
+    return spec, base_step, reference_images
+
+
 async def run_sample(
     sample: BenchSample,
     *,
@@ -119,7 +158,11 @@ async def run_sample(
     out_root: Path,
     overwrite: bool = False,
 ) -> SampleOutcome:
-    """Generate one candidate and copy its STEP into the submission layout."""
+    """Generate one candidate and copy its STEP into the submission layout.
+
+    Dispatches on ``sample.task_type``: an editing sample seeds its ``input.step`` and
+    edits it; a generation sample builds from scratch (optionally from a drawing).
+    """
     out_path = output_step_path(out_root, sample.name)
     if out_path.exists() and not overwrite:
         return SampleOutcome(
@@ -127,13 +170,19 @@ async def run_sample(
             step_written=True, out_path=out_path,
         )
 
-    spec, drawings = sample_to_request(sample)
     # cad-gen writes its timestamped run dir under out_dir; keep it beside the
     # candidate so the trace (iterations, report.md, views.png) is easy to find.
     sample_config = config.model_copy(update={"out_dir": out_root / sample.name / "cadgen"})
 
     try:
-        result = await generate_cad(spec, sample_config, drawings=drawings)
+        if sample.task_type == "editing":
+            spec, base_step, reference_images = sample_to_edit_request(sample)
+            result = await generate_cad(
+                spec, sample_config, base_step=base_step, reference_images=reference_images
+            )
+        else:
+            spec, drawings = sample_to_request(sample)
+            result = await generate_cad(spec, sample_config, drawings=drawings)
     except Exception as exc:  # one sample's failure must not abort the batch
         return SampleOutcome(
             name=sample.name, task_type=sample.task_type, error=f"{type(exc).__name__}: {exc}",

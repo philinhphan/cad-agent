@@ -22,6 +22,8 @@ _ENV_DATA_REPO = "CADGENBENCH_DATA_REPO"
 
 # Image attachments we can feed to cad-gen's drawing mode.
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+# Base-model attachments for editing samples.
+_STEP_SUFFIXES = {".step", ".stp"}
 
 
 class BenchSample(BaseModel):
@@ -41,6 +43,28 @@ class BenchSample(BaseModel):
             if candidate.suffix.lower() in _IMAGE_SUFFIXES and candidate.is_file():
                 return candidate
         return None
+
+    @property
+    def step_path(self) -> Path | None:
+        """First existing STEP attachment (the base model to edit), if any."""
+        for name in self.input_files:
+            candidate = self.dir / name
+            if candidate.suffix.lower() in _STEP_SUFFIXES and candidate.is_file():
+                return candidate
+        return None
+
+    @property
+    def render_paths(self) -> list[Path]:
+        """Preview renders of the base model, from the sample's ``renders/`` dir.
+
+        Editing samples ship ``renders/{front,iso,right,top}.png`` — previews of
+        ``input.step`` used as before-state context for the editing generator/critic.
+        Returns them sorted by name; empty when there is no ``renders/`` dir.
+        """
+        renders = self.dir / "renders"
+        if not renders.is_dir():
+            return []
+        return sorted(p for p in renders.iterdir() if p.suffix.lower() in _IMAGE_SUFFIXES)
 
 
 def resolve_inputs_dir(repo: str | None = None) -> Path:

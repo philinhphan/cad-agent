@@ -8,7 +8,7 @@ from pydantic_ai import Agent, RunContext
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
-from cad_gen.agents.prompts import GENERATOR_INSTRUCTIONS
+from cad_gen.agents.prompts import EDITING_GENERATOR_INSTRUCTIONS, GENERATOR_INSTRUCTIONS
 from cad_gen.bmw import resolve_model
 from cad_gen.models import ExecutionResult, IntrospectionResult, ReasoningEffort
 from cad_gen.sandbox.executor import introspect_cad_code, run_cad_code
@@ -36,6 +36,9 @@ class IterationWorkspace:
     max_inspect: int = 8
     inspect_timeout_s: float = 30
     introspections: list[IntrospectionResult] = field(default_factory=list)
+    # Files seeded into every execution/probe dir before the code runs (editing mode
+    # drops the base model here, e.g. {"input.step": <bytes>}). Empty for generation.
+    seed_files: dict[str, bytes] = field(default_factory=dict)
 
     @property
     def last_success(self) -> ExecutionResult | None:
@@ -43,13 +46,19 @@ class IterationWorkspace:
 
     def execute(self, code: str) -> ExecutionResult:
         attempt_dir = self.iter_dir / f"attempt_{len(self.attempts) + 1:02d}"
-        result = self.executor(code, attempt_dir, timeout_s=self.timeout_s)
+        # Pass seed_files only when set so the generation call signature is unchanged
+        # and executor test-doubles that don't accept the kwarg keep working.
+        extra = {"seed_files": self.seed_files} if self.seed_files else {}
+        result = self.executor(code, attempt_dir, timeout_s=self.timeout_s, **extra)
         self.attempts.append(result)
         return result
 
     def introspect(self, code: str, query: dict) -> IntrospectionResult:
         probe_dir = self.iter_dir / f"inspect_{len(self.introspections) + 1:02d}"
-        result = self.introspector(code, query, probe_dir, timeout_s=self.inspect_timeout_s)
+        extra = {"seed_files": self.seed_files} if self.seed_files else {}
+        result = self.introspector(
+            code, query, probe_dir, timeout_s=self.inspect_timeout_s, **extra
+        )
         self.introspections.append(result)
         return result
 
@@ -129,17 +138,23 @@ def format_selector(data: dict) -> str:
 
 
 def build_generator_agent(
-    model: str | Model, *, reasoning_effort: ReasoningEffort | None = None
+    model: str | Model,
+    *,
+    reasoning_effort: ReasoningEffort | None = None,
+    editing: bool = False,
 ) -> Agent[IterationWorkspace, str]:
     model = resolve_model(model)  # route `bmw:...` strings to the BMW gateway
     # `thinking` is pydantic-ai's provider-agnostic reasoning-effort knob; when unset we
     # pass no model_settings so the provider's own default is left untouched.
     model_settings = ModelSettings(thinking=reasoning_effort) if reasoning_effort else None
+    # Editing mode swaps in instructions that permit importing the seeded base model and
+    # frame the task as a minimal modification (see EDITING_GENERATOR_INSTRUCTIONS).
+    instructions = EDITING_GENERATOR_INSTRUCTIONS if editing else GENERATOR_INSTRUCTIONS
     agent: Agent[IterationWorkspace, str] = Agent(
         model,
         deps_type=IterationWorkspace,
         output_type=str,
-        instructions=GENERATOR_INSTRUCTIONS,
+        instructions=instructions,
         model_settings=model_settings,
     )
 

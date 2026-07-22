@@ -45,6 +45,9 @@ async def generate_cad(
     *,
     drawings: list[DrawingAttachment] | None = None,
     interpretation: str | None = None,
+    base_step: bytes | None = None,
+    base_step_name: str = "input.step",
+    reference_images: list[DrawingAttachment] | None = None,
     generator_model: str | Model | None = None,
     critic_model: str | Model | None = None,
     interpreter_model: str | Model | None = None,
@@ -60,14 +63,29 @@ async def generate_cad(
     threaded to the generator (every iteration) and critic as authoritative ground truth,
     and `interpretation` (an extracted-dimensions digest) is auto-generated if not supplied
     by the caller (e.g. a human-reviewed/edited digest from the CLI or web gate).
+
+    Editing mode: pass `base_step` (the bytes of a base CAD model). It is seeded as
+    `base_step_name` into every sandbox execution/probe dir so generated code can load it
+    with ``cq.importers.importStep("input.step")``, and the generator + critic switch to
+    editing instructions. `reference_images` (renders of the base model) are attached to the
+    generator and critic as before-state context. Editing has no drawing, so the whole
+    drawing pipeline (interpretation/constraints/reprojection) stays dormant.
     """
     config = config or RunConfig()
     drawings = drawings or []
+    reference_images = reference_images or []
+    is_editing = base_step is not None
+    seed_files = {base_step_name: base_step} if base_step is not None else {}
     run_dir = _new_run_dir(Path(config.out_dir))
     (run_dir / "spec.txt").write_text(spec)
     (run_dir / "config.json").write_text(config.model_dump_json(indent=2))
 
     drawing_names = _persist_drawings(run_dir, drawings)
+    if base_step is not None:
+        input_dir = run_dir / "input"
+        input_dir.mkdir(parents=True, exist_ok=True)
+        (input_dir / base_step_name).write_bytes(base_step)
+    _persist_reference_images(run_dir, reference_images)
     if drawings and interpretation is None:
         interpreter = build_drawing_parser_agent(interpreter_model or config.model)
         interpretation = await interpret_drawing(interpreter, spec=spec, drawings=drawings)
@@ -88,10 +106,14 @@ async def generate_cad(
             )
 
     generator = build_generator_agent(
-        generator_model or config.model, reasoning_effort=config.reasoning_effort
+        generator_model or config.model,
+        reasoning_effort=config.reasoning_effort,
+        editing=is_editing,
     )
     critic = build_critic_agent(
-        critic_model or config.critic_model, reasoning_effort=config.critic_reasoning_effort
+        critic_model or config.critic_model,
+        reasoning_effort=config.critic_reasoning_effort,
+        editing=is_editing,
     )
 
     iterations: list[IterationRecord] = []
@@ -107,6 +129,7 @@ async def generate_cad(
             timeout_s=config.exec_timeout_s,
             max_attempts=config.max_exec_attempts_per_iteration,
             executor=executor,
+            seed_files=seed_files,
         )
 
         prompt = _build_prompt(
@@ -117,6 +140,7 @@ async def generate_cad(
             composite_bytes,
             constraints=constraints,
             primitive_digests=primitive_digests,
+            reference_images=reference_images,
         )
         gen_result = await generator.run(prompt, deps=workspace)
 
@@ -171,6 +195,8 @@ async def generate_cad(
                 reprojection=record.reprojection,
                 constraints=constraints,
                 constraint_validation=record.constraint_validation,
+                reference_images=reference_images,
+                editing=is_editing,
             )
 
         (iter_dir / "iteration.json").write_text(record.model_dump_json(indent=2))
@@ -228,6 +254,21 @@ def _persist_drawings(run_dir: Path, drawings: list[DrawingAttachment]) -> list[
     for i, d in enumerate(drawings, start=1):
         name = drawing_filename(i, d.media_type)
         (input_dir / name).write_bytes(d.data)
+        names.append(name)
+    return names
+
+
+def _persist_reference_images(run_dir: Path, images: list[DrawingAttachment]) -> list[str]:
+    """Save editing base-model renders under run_dir/input/reference_NN.* for the trace."""
+    if not images:
+        return []
+    input_dir = run_dir / "input"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    names: list[str] = []
+    for i, img in enumerate(images, start=1):
+        suffix = ".jpg" if img.media_type == "image/jpeg" else ".png"
+        name = f"reference_{i:02d}{suffix}"
+        (input_dir / name).write_bytes(img.data)
         names.append(name)
     return names
 
@@ -292,12 +333,14 @@ def _build_prompt(
     *,
     constraints: DrawingConstraints | None = None,
     primitive_digests: list[str] | None = None,
+    reference_images: list[DrawingAttachment] | None = None,
 ) -> str | list:
     """Generator prompt. Plain str for text-only runs (byte-identical to before);
     a [text, *images] list when drawings are present so the model re-reads the
     authoritative drawing on every iteration. When a champion reprojection overlay is
     available it leads the image list as a diagnostic locator (only ever set in drawing
-    mode, so the text-only path is untouched)."""
+    mode, so the text-only path is untouched). In editing mode `reference_images` (base-model
+    renders) are attached instead — never together with drawings."""
     text = spec if feedback is None else f"{spec}\n\n{feedback}"
     if interpretation:
         text += (
@@ -314,6 +357,17 @@ def _build_prompt(
     if primitive_digests:
         text += "\n\n## Deterministic drawing primitive extraction:\n"
         text += "\n".join(f"- {d}" for d in primitive_digests)
+    if reference_images:
+        text += (
+            "\n\n(The attached image(s) show the CURRENT state of the model you are "
+            "editing — isometric and orthographic renders of the base `input.step`. Use "
+            "them to locate the feature the instruction names; they are the starting "
+            "point you are modifying, not a target to reproduce.)"
+        )
+        return [
+            text,
+            *(BinaryContent(data=d.data, media_type=d.media_type) for d in reference_images),
+        ]
     if not drawings:
         return text
     if reproject_composite is not None:
