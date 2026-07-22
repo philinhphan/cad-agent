@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
 
-from cad_gen.bench.adapter import SampleOutcome, run_all
+from cad_gen.bench.adapter import SampleOutcome, ensure_all_sample_dirs, run_all
 from cad_gen.bench.dataset import load_samples, resolve_inputs_dir
 from cad_gen.bench.submission import SubmissionMeta, write_submission_zip
 from cad_gen.cli import _require_api_key
@@ -93,6 +93,19 @@ def run(
         run_all(all_samples, config=config, out_root=out, parallel=parallel,
                 overwrite=overwrite, on_result=_progress)
     )
+
+    # A full (unfiltered) run is a complete submission: the leaderboard requires the
+    # folder set to match the whole dataset, so materialize empty folders for every
+    # non-generation sample (recorded "missing" / 0). Skipped for smoke subsets.
+    if names is None and limit is None:
+        all_names = [s.name for s in load_samples(inputs_dir, task_type=None)]
+        n_stub = ensure_all_sample_dirs(out, all_names)
+        if n_stub:
+            console.print(
+                f"[dim]added {n_stub} empty folder(s) for non-generation samples "
+                "(scored 'missing'/0) so the submission matches the full dataset[/dim]"
+            )
+
     _print_summary(outcomes, out)
 
 

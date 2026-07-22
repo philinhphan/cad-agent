@@ -53,6 +53,23 @@ def output_step_path(out_root: Path, sample_name: str) -> Path:
     return out_root / sample_name / CANDIDATE_NAME
 
 
+def ensure_all_sample_dirs(out_root: Path, sample_names: list[str]) -> int:
+    """Create an empty folder for every dataset sample missing from `out_root`.
+
+    The leaderboard rejects a submission whose folder set doesn't match the full
+    dataset, so samples we don't generate (e.g. editing, or a generation sample
+    that produced no geometry) must still appear as empty folders — the grader
+    records them "missing" / scores 0. Returns the number of folders created.
+    """
+    created = 0
+    for name in sample_names:
+        sample_dir = out_root / name
+        if not sample_dir.exists():
+            sample_dir.mkdir(parents=True)
+            created += 1
+    return created
+
+
 def sample_to_request(sample: BenchSample) -> tuple[str, list[DrawingAttachment]]:
     """Map a CADGenBench sample onto a cad-gen generation request.
 

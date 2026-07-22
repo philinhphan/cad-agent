@@ -5,6 +5,7 @@ the sample -> cad-gen request mapping, run_sample's STEP layout (with
 generate_cad stubbed), resume/skip behaviour, and the submission zip contract.
 """
 import json
+import re
 import zipfile
 from pathlib import Path
 
@@ -12,7 +13,12 @@ import pytest
 from typer.testing import CliRunner
 
 from cad_gen.bench import cli as bench_cli
-from cad_gen.bench.adapter import output_step_path, run_sample, sample_to_request
+from cad_gen.bench.adapter import (
+    ensure_all_sample_dirs,
+    output_step_path,
+    run_sample,
+    sample_to_request,
+)
 from cad_gen.bench.dataset import load_samples
 from cad_gen.bench.submission import SubmissionMeta, write_submission_zip
 from cad_gen.models import (
@@ -26,6 +32,12 @@ from cad_gen.models import (
 
 runner = CliRunner()
 FIXTURE_PNG = Path(__file__).parent / "fixtures" / "drawing.png"
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(text: str) -> str:
+    """Strip rich's ANSI styling so assertions match the visible text."""
+    return _ANSI.sub("", text)
 
 
 def _make_sample(dir: Path, name: str, body: str, *, with_png: bool = False) -> Path:
@@ -173,6 +185,23 @@ async def test_run_sample_survives_generation_error(tmp_path, monkeypatch):
     assert outcome.error and "model exploded" in outcome.error
 
 
+# ── full-dataset folder completeness (leaderboard requires it) ─────────────
+
+def test_ensure_all_sample_dirs_creates_only_missing(tmp_path):
+    out_root = tmp_path / "results"
+    output_step_path(out_root, "101").parent.mkdir(parents=True)  # 101 already generated
+    output_step_path(out_root, "101").write_text("candidate")
+
+    created = ensure_all_sample_dirs(out_root, ["101", "201", "202"])
+
+    assert created == 2  # only the missing editing folders
+    assert (out_root / "201").is_dir() and (out_root / "202").is_dir()
+    # existing candidate untouched
+    assert output_step_path(out_root, "101").read_text() == "candidate"
+    # the empty folders carry no candidate → grader records them "missing"
+    assert not output_step_path(out_root, "201").exists()
+
+
 # ── submission zip contract ────────────────────────────────────────────────
 
 def test_write_submission_zip_layout(tmp_path):
@@ -231,4 +260,4 @@ def test_package_cli_warns_without_agree(tmp_path):
     ])
 
     assert result.exit_code == 0
-    assert "agree_to_publish=false" in result.output
+    assert "agree_to_publish=false" in _plain(result.output)
