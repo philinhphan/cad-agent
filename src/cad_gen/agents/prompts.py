@@ -221,23 +221,45 @@ Rules:
   — the sandbox handles export and measurement.
 - Apply ONLY the change the instruction asks for. Leave every OTHER feature exactly as it
   is in `input.step` — do not re-model the part from scratch, do not "clean up", round, or
-  re-dimension anything the instruction did not mention. The benchmark rewards a minimal,
-  correct edit and scores both a from-scratch rebuild and a do-nothing no-op poorly, so the
-  untouched geometry must remain identical to the base.
+  re-dimension anything the instruction did not mention.
+- HOW THIS IS SCORED, because it should drive every decision you make: your shape score is
+  measured against the UNMODIFIED input, not against zero. Leaving the part alone scores 0 on
+  that axis, and so does any candidate whose untouched geometry drifted — there is no partial
+  credit for "close". The scoring room is exactly the size of the requested change, and every
+  millimetre of collateral damage spends it. Preserving the rest of the part is not politeness,
+  it is most of the score. An invalid solid scores 0 outright.
+- Do NOT re-position the part. No translate, no rotate, no centering, no re-scaling of the
+  whole model, however tempting a tidier origin looks. The edited part must sit exactly where
+  the base sits.
+- Match the SIZE of the change to the instruction. Removing one internal groove means adding
+  back the groove's own volume, not boring the whole feature out; raising one wall by 5 mm
+  means 5 mm of new material, not a new wall. Before you commit, ask what volume your edit
+  should plausibly move and check the measured volume change against it.
 - Assign the final edited solid to a variable named `result`. Exactly one watertight solid
   unless the instruction explicitly requires more (n_solids is measured; > 1 is usually WRONG).
 - Imported B-rep faces/edges have NO named variables — you must locate the feature named in
-  the instruction by geometry. Use the READ-ONLY probe tools (they build your code WITHOUT
-  exporting/scoring and do NOT consume the execute_cad_code budget) to ground every selection:
-  - inspect_geometry(code): lists the solids/faces/edges of the model you loaded/built, with
-    coordinates — use it FIRST to find the faces/edges the instruction refers to (e.g. "the
-    +X pockets", "walls with long axis along Y").
+  the instruction by geometry. A BASE MODEL BRIEFING block in the user message inventories
+  the bores and planar walls of `input.step` with coordinates; start there, then confirm with
+  the READ-ONLY probe tools (they build your code WITHOUT exporting/scoring and do NOT consume
+  the execute_cad_code budget):
+  - find_geometry(code, target, geom_type, area_min/max, radius_min/max, normal, center_box,
+    limit): FINDS the faces or edges matching a filter, largest first, with coordinates and
+    the model's absolute bounds. This is the tool for locating a feature on the imported base
+    — filter by radius to find a named bore, by normal to find a wall, by center_box to
+    restrict to a side of the part.
+  - inspect_geometry(code): a grouped overview of the model. It samples only a handful of
+    entities per geometry type, so on a base model with hundreds of faces use find_geometry
+    instead; inspect_geometry is for checking what YOU built.
   - check_selector(code, target, selector): reports which edges/faces a selector matches,
     with coordinates. ALWAYS verify a selection BEFORE any .fillet()/.chamfer()/.shell()/cut
     — an empty or wrong selection is the #1 cause of crashes.
 - Favour ROBUSTNESS and locality: prefer boolean cut/union with a small solid positioned by
-  coordinate (from inspect_geometry) over fragile chained selectors on the imported shape.
+  coordinate (from find_geometry) over fragile chained selectors on the imported shape.
   A crash scores ZERO for the whole iteration.
+- Your output must pass an OCCT validity check (BRepCheck, closed shells, manifold mesh). A
+  few base models arrive with a defective face already, so a validity complaint may be
+  inherited rather than yours; either way a boolean THROUGH the offending region usually
+  regenerates it clean, where offsets and face-level fixes usually do not.
 - You MUST validate the code by calling execute_cad_code with the COMPLETE script. If it
   fails, study the traceback, fix the code, and call the tool again with the full corrected
   script. Confirm the measured geometry reflects your intended change (and only that change).
@@ -264,26 +286,48 @@ Rules:
   measurement.
 - Apply ONLY the change the instruction asks for. Leave every OTHER feature exactly as it
   is in `input.step` — do not re-model the part from scratch, do not "clean up", round, or
-  re-dimension anything the instruction did not mention. The benchmark rewards a minimal,
-  correct edit and scores both a from-scratch rebuild and a do-nothing no-op poorly, so the
-  untouched geometry must remain identical to the base.
+  re-dimension anything the instruction did not mention.
+- HOW THIS IS SCORED, because it should drive every decision you make: your shape score is
+  measured against the UNMODIFIED input, not against zero. Leaving the part alone scores 0 on
+  that axis, and so does any candidate whose untouched geometry drifted — there is no partial
+  credit for "close". The scoring room is exactly the size of the requested change, and every
+  millimetre of collateral damage spends it. Preserving the rest of the part is not politeness,
+  it is most of the score. An invalid solid scores 0 outright.
+- Do NOT re-position the part. No translate, no rotate, no centering, no re-scaling of the
+  whole model, however tempting a tidier origin looks. The edited part must sit exactly where
+  the base sits.
+- Match the SIZE of the change to the instruction. Removing one internal groove means adding
+  back the groove's own volume, not boring the whole feature out; raising one wall by 5 mm
+  means 5 mm of new material, not a new wall. Before you commit, ask what volume your edit
+  should plausibly move and check the measured volume change against it.
 - Assign the final edited solid to a variable named `result`. Exactly one watertight solid
   unless the instruction explicitly requires more (n_solids is measured; > 1 is usually WRONG).
 - Imported B-rep faces/edges have NO named variables — you must locate the feature named in
-  the instruction by geometry. Use the READ-ONLY probe tools (they build your code WITHOUT
-  exporting/scoring and do NOT consume the execute_cad_code budget) to ground every selection:
-  - inspect_geometry(code): lists the solids/faces/edges of the model you loaded/built, with
-    coordinates — use it FIRST to find the faces/edges the instruction refers to (e.g. "the
-    +X pockets", "walls with long axis along Y").
+  the instruction by geometry. A BASE MODEL BRIEFING block in the user message inventories
+  the bores and planar walls of `input.step` with coordinates; start there, then confirm with
+  the READ-ONLY probe tools (they build your code WITHOUT exporting/scoring and do NOT consume
+  the execute_cad_code budget):
+  - find_geometry(code, target, geom_type, area_min/max, radius_min/max, normal, center_box,
+    limit): FINDS the faces or edges matching a filter, largest first, with coordinates and
+    the model's absolute bounds. This is the tool for locating a feature on the imported base
+    — filter by radius to find a named bore, by normal to find a wall, by center_box to
+    restrict to a side of the part.
+  - inspect_geometry(code): a grouped overview of the model. It samples only a handful of
+    entities per geometry type, so on a base model with hundreds of faces use find_geometry
+    instead; inspect_geometry is for checking what YOU built.
   - check_selection(code, expression): evaluates a build123d ShapeList expression (e.g.
     `result.faces().filter_by(Axis.X)`) and reports what it matches, with coordinates.
     ALWAYS verify a selection BEFORE any fillet()/chamfer()/offset()/cut — an empty or wrong
     selection is the #1 cause of crashes.
 - Favour ROBUSTNESS and locality: prefer a boolean cut/union with a small solid positioned by
-  coordinate (from inspect_geometry) over fragile chained ShapeList filters on the imported
+  coordinate (from find_geometry) over fragile chained ShapeList filters on the imported
   shape. To combine with the imported model, wrap it in a builder with
   `with BuildPart() as edited: add(result)` and then apply your change with Mode.SUBTRACT /
   Mode.ADD. A crash scores ZERO for the whole iteration.
+- Your output must pass an OCCT validity check (BRepCheck, closed shells, manifold mesh). A
+  few base models arrive with a defective face already, so a validity complaint may be
+  inherited rather than yours; either way a boolean THROUGH the offending region usually
+  regenerates it clean, where offsets and face-level fixes usually do not.
 - You MUST validate the code by calling execute_cad_code with the COMPLETE script. If it
   fails, study the traceback, fix the code, and call the tool again with the full corrected
   script. Confirm the measured geometry reflects your intended change (and only that change).
@@ -461,16 +505,24 @@ You are a meticulous CAD design reviewer grading an EDIT to an existing model. Y
    the EDITED (after) model. The following image(s) show the ORIGINAL (before) model —
    isometric and orthographic renders of the base that was to be edited.
 
-Judge the edit on three things:
+Judge the edit on four things:
 - CHANGE APPLIED: was the requested modification carried out, correctly and completely?
   Compare the after views against the before views — the difference between them should be
   exactly the change the instruction describes (right feature, right faces, right amount /
   direction). Use the measured bounding box and volume to confirm the magnitude.
 - REST PRESERVED: is everything the instruction did NOT mention identical to the before
   model? Unrequested changes, deleted features, or a part visibly re-modelled from scratch
-  are defects — penalize them even if the requested change is also present.
-- VALIDITY: exactly one solid body unless the instruction requires more; watertight should
-  be true; the volume must be plausible for the shape.
+  are defects — penalize them even if the requested change is also present. The shape score
+  is measured against the unmodified input, so drift in untouched geometry costs as much as
+  getting the edit wrong.
+- MAGNITUDE: is the measured volume change the right SIZE for what was asked? A local edit
+  that moves a large fraction of the part's volume has done something other than what the
+  instruction said, however plausible the renders look. Read the measured change block: it
+  is ground truth, and it sees what a shaded render cannot.
+- VALIDITY: when a validity-gate block is present it is authoritative — a solid that fails
+  the gate scores 0 on the benchmark whatever else is right, so it cannot score above 1 here.
+  Otherwise: exactly one solid body unless the instruction requires more, watertight true,
+  and a volume plausible for the shape.
 
 Scoring rubric (be strict):
 - 10: the requested edit is applied exactly and nothing else changed.
@@ -478,8 +530,10 @@ Scoring rubric (be strict):
 - 5-7: edit attempted but wrong in amount/location/extent, OR correct edit but some
   unrelated geometry drifted.
 - 2-4: wrong change, or the requested change is largely missing.
-- 0-1: NO-OP (after is indistinguishable from before) or the part was rebuilt from scratch,
-  broken, or unrelated — a model identical to the before is worthless regardless of validity.
+- 0-1: NO-OP (after is indistinguishable from before); the part was rebuilt from scratch,
+  broken, or unrelated; the part was moved/rotated as a whole; or the geometry fails the
+  validity gate. A model identical to the before is worthless regardless of validity, and an
+  invalid one is worthless regardless of shape.
 
 Set matches_spec = true only when score >= 8.
 issues: concrete, observable problems ("only 2 of the 4 +X pocket walls were moved", "the

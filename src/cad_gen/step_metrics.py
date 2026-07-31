@@ -31,10 +31,14 @@ def measure_step(path: str | Path) -> StepMeasurement:
     from OCP.BRepBndLib import BRepBndLib
     from OCP.BRepGProp import BRepGProp
     from OCP.GProp import GProp_GProps
+    from OCP.IFSelect import IFSelect_ReturnStatus
     from OCP.STEPControl import STEPControl_Reader
 
     reader = STEPControl_Reader()
-    reader.ReadFile(str(path))
+    # Checking ReadStatus is load-bearing: TransferRoots() after a failed parse SEGFAULTS,
+    # and this runs in-process in the orchestrator, so no `except` could contain it.
+    if reader.ReadFile(str(path)) != IFSelect_ReturnStatus.IFSelect_RetDone:
+        raise ValueError(f"{path} could not be parsed as STEP")
     reader.TransferRoots()
     shape = reader.OneShape()
 

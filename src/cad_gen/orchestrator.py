@@ -18,16 +18,20 @@ from cad_gen.agents.generator import (
     IterationWorkspace,
     build_generator_agent,
 )
+from cad_gen.base_briefing import build_base_briefing, format_briefing
 from cad_gen.drawing_constraints import derive_drawing_constraints, validate_drawing_constraints
+from cad_gen.edit_diff import edit_diff_report
 from cad_gen.imaging import drawing_filename
 from cad_gen.models import (
     Critique,
     DrawingAttachment,
     DrawingConstraints,
     EditDelta,
+    EditDiff,
     IterationRecord,
     RunConfig,
     RunResult,
+    ValidityReport,
 )
 from cad_gen.rendering.renderer import render_views
 from cad_gen.reproject import (
@@ -43,6 +47,7 @@ from cad_gen.reproject.drawing_primitives import (
 )
 from cad_gen.sandbox.executor import run_cad_code
 from cad_gen.step_metrics import StepMeasurement, describe_edit_delta, is_noop_edit, measure_step
+from cad_gen.step_validity import check_step_validity, describe_validity
 
 RendererFn = Callable[..., Path]
 IterationCallback = Callable[[IterationRecord], None]
@@ -130,11 +135,20 @@ async def generate_cad(
     # Editing only: measure the base model ONCE so every iteration can be compared against
     # it. Read via raw OCP so the numbers are independent of the CAD library in use.
     base_measurement = None
+    base_briefing = None
     if base_step is not None:
         try:
             base_measurement = measure_step(run_dir / "input" / base_step_name)
         except Exception:  # noqa: BLE001 — the guard is a safety net, never a hard failure
             base_measurement = None
+        # A feature inventory of the base model, so the generator can map the instruction's
+        # words ("the largest-diameter bore", "walls parallel to YZ") onto coordinates.
+        # inspect_geometry samples 12 faces per geometry type, which on a 1000-face base is
+        # not enough to find anything.
+        briefing = build_base_briefing(run_dir / "input" / base_step_name)
+        if briefing is not None:
+            base_briefing = format_briefing(briefing)
+            (run_dir / "input" / "base_briefing.md").write_text(base_briefing)
 
     iterations: list[IterationRecord] = []
     feedback: str | None = None
@@ -162,6 +176,7 @@ async def generate_cad(
             constraints=constraints,
             primitive_digests=primitive_digests,
             reference_images=reference_images,
+            base_briefing=base_briefing,
         )
         gen_result = await generator.run(prompt, deps=workspace)
 
@@ -213,6 +228,14 @@ async def generate_cad(
             if base_measurement is not None and execution.step_path is not None:
                 record.edit_delta = _build_edit_delta(base_measurement, execution.step_path)
 
+            # The benchmark's own validity gate, on the STEP exactly as it would be
+            # submitted. An invalid solid scores 0 there whatever else is right about it,
+            # and the harness's trimesh proxy does not see B-rep defects at all — 2 of the
+            # 5 invalid editing candidates in v3 passed that proxy. Runs before the critic
+            # so the verdict can ground the critique.
+            if config.validity_gate and execution.step_path is not None:
+                record.validity = _build_validity_report(execution.step_path, config)
+
             record.critique = await run_critique(
                 critic,
                 spec=spec,
@@ -226,6 +249,7 @@ async def generate_cad(
                 editing=is_editing,
                 library=config.library,
                 edit_delta=record.edit_delta,
+                validity=record.validity,
             )
             # A no-op cannot be accepted, whatever the critic thought it saw. Returning the
             # base model untouched scores 0 on the benchmark's renormalized shape axis, so
@@ -233,6 +257,11 @@ async def generate_cad(
             # here (rather than trusting the rubric) makes that structural.
             if record.edit_delta is not None and record.edit_delta.is_noop:
                 record.critique = _force_noop_critique(record.critique)
+            # Same argument, one level more fundamental: an invalid solid scores 0 on every
+            # axis. Applied after the no-op override so the validity issue ends up first in
+            # the list — it is the one that has to be fixed before anything else can count.
+            if record.validity is not None and record.validity.known_invalid:
+                record.critique = _force_invalid_critique(record.critique, record.validity)
 
         (iter_dir / "iteration.json").write_text(record.model_dump_json(indent=2))
         iterations.append(record)
@@ -241,12 +270,22 @@ async def generate_cad(
 
         if record.effective_score >= config.score_threshold:
             break
-        champion = max(iterations, key=lambda r: (r.effective_score, r.index))
+        champion = max(iterations, key=_champion_key)
         ledger = _update_ledger(ledger, champion)
         feedback = _build_feedback(champion, latest=record, ledger=ledger)
         composite_bytes = _champion_composite_bytes(champion)
 
-    best = max(iterations, key=lambda r: (r.effective_score, r.index))
+    best = max(iterations, key=_champion_key)
+    # Editing only: measure what `best` actually changed, by cutting it against the base.
+    # Runs here rather than per iteration because the booleans cost 4-18s per direction on
+    # real parts — too much to pay five times for feedback the loop could no longer act on.
+    edit_diff = None
+    if is_editing and config.edit_diff:
+        (run_dir / "final").mkdir(parents=True, exist_ok=True)
+        best, edit_diff, lumps_stl = _select_by_edit_diff(
+            iterations, run_dir / "input" / base_step_name, run_dir, config
+        )
+        _render_edit_diff(lumps_stl, run_dir, renderer)
     result = RunResult(
         accepted=best.effective_score >= config.score_threshold,
         spec=spec,
@@ -256,12 +295,37 @@ async def generate_cad(
         best=best,
         iterations=iterations,
         run_dir=run_dir,
+        edit_diff=edit_diff,
     )
     _persist_final(result)
     _write_report(result, config)
     (run_dir / "run_result.json").write_text(result.model_dump_json(indent=2))
     return result
 
+
+def _champion_key(record: IterationRecord) -> tuple[bool, int, int]:
+    """Ranking key for picking a champion / the final best iteration.
+
+    Validity comes FIRST, ahead of the critic's score. A candidate that fails the benchmark's
+    validity gate scores 0 on the leaderboard no matter how good it looks, so a valid
+    iteration scoring 5 is strictly worth more than an invalid one scoring 9 — which is
+    exactly the trade the old score-only key got wrong.
+    """
+    return (record.gate_ok, record.effective_score, record.index)
+
+
+_INVALID_ISSUE_HEAD = (
+    "INVALID GEOMETRY: the exported solid fails the benchmark's validity gate, which scores "
+    "an invalid solid 0 on every axis regardless of how correct the shape is. This is the "
+    "first thing to fix. OCCT reports:"
+)
+_INVALID_ISSUE_TAIL = (
+    "Rebuild the offending region with a different construction rather than patching around "
+    "it: booleans against a coordinate-positioned primitive regenerate topology cleanly, "
+    "where chained face selectors and offsets on an imported B-rep often do not. If the base "
+    "model itself is what carries the defect, cutting or fusing THROUGH that region usually "
+    "regenerates it clean."
+)
 
 _NOOP_ISSUE = (
     "NO-OP: the produced geometry is measurably identical to the base model "
@@ -284,6 +348,99 @@ def _build_edit_delta(base: StepMeasurement, step_path: Path) -> EditDelta | Non
         candidate_volume_mm3=candidate.volume_mm3,
         volume_change_pct=(candidate.volume_mm3 - base.volume_mm3) / denom * 100.0,
         digest=describe_edit_delta(base, candidate),
+    )
+
+
+def _render_edit_diff(lumps_stl: Path | None, run_dir: Path, renderer: RendererFn) -> None:
+    """Render just the material the edit moved, for a human reading the run afterwards.
+
+    Deliberately NOT the ghosted overlay-on-the-base view: the changed lumps alone answer
+    "what did this edit touch?" immediately, and reusing `render_views` unchanged keeps a
+    debug artifact from growing its own rendering path (and its own failure modes). Purely
+    diagnostic — nothing reads this, and a failure is silently ignored.
+    """
+    if lumps_stl is None or not lumps_stl.exists() or lumps_stl.stat().st_size == 0:
+        return
+    try:
+        shutil.copy2(lumps_stl, run_dir / "final" / "edit_diff_lumps.stl")
+        renderer(lumps_stl, run_dir / "final" / "edit_diff.png", None)
+    except Exception:  # noqa: BLE001 — a debug render must never fail the run
+        pass
+
+
+def _select_by_edit_diff(
+    iterations: list[IterationRecord], base_step: Path, run_dir: Path, config: RunConfig
+) -> tuple[IterationRecord, EditDiff | None, Path | None]:
+    """Pick the best-ranked iteration whose measured edit looks like a real local change.
+
+    Walks the ranking downwards, at most `edit_diff_max_candidates` deep, and returns the
+    first candidate the diff accepts. When none is accepted, the top-ranked candidate is
+    returned anyway together with its diff: rejecting every option would leave the sample
+    with nothing, and the recorded verdict is what lets the bench adapter decide whether the
+    unmodified input is the better thing to submit.
+
+    Each candidate meshes its changed material to its OWN file, and the chosen one's path
+    comes back with it — sharing one path would leave the last candidate examined on disk
+    while the returned record is a different one, and the debug render would then show an
+    edit that was not submitted.
+    """
+    ranked = sorted(iterations, key=_champion_key, reverse=True)
+    considered = [r for r in ranked if r.execution is not None and r.execution.step_path]
+    if not considered or not base_step.exists():
+        return (ranked[0], None, None) if ranked else (iterations[0], None, None)
+
+    first: tuple[EditDiff, Path] | None = None
+    for record in considered[: max(1, config.edit_diff_max_candidates)]:
+        lumps_stl = run_dir / f"iter_{record.index:02d}" / "edit_diff_lumps.stl"
+        diff = edit_diff_report(
+            base_step,
+            record.execution.step_path,
+            timeout_s=config.edit_diff_timeout_s,
+            lumps_stl=lumps_stl,
+        )
+        first = first or (diff, lumps_stl)
+        # An unevaluated diff is not a rejection — withhold the signal rather than demote a
+        # candidate over an OCCT timeout, the same contract the reprojection check uses.
+        if not diff.evaluated or diff.plausible:
+            return record, diff, lumps_stl
+    return considered[0], first[0], first[1]
+
+
+def _build_validity_report(step_path: Path, config: RunConfig) -> ValidityReport:
+    """Run the benchmark validity gate on an iteration's STEP; never raises.
+
+    A gate that could not run comes back `evaluated=False`, which `gate_ok` treats as "not
+    rejected" — a flaky OCCT call must not cost an otherwise good iteration its champion slot.
+    """
+    validity = check_step_validity(step_path, timeout_s=config.validity_timeout_s)
+    return ValidityReport(
+        evaluated=validity.evaluated,
+        is_valid=validity.is_valid,
+        is_watertight=validity.is_watertight,
+        mesh_checked=validity.mesh_checked,
+        errors=list(validity.errors),
+        unknown_reason=validity.unknown_reason,
+        digest=describe_validity(validity),
+    )
+
+
+def _force_invalid_critique(critique: Critique | None, validity: ValidityReport) -> Critique:
+    """Rewrite a critique so a measured-invalid candidate can never clear the threshold."""
+    issue = "\n".join(
+        [_INVALID_ISSUE_HEAD, *(f"  - {err}" for err in validity.errors), _INVALID_ISSUE_TAIL]
+    )
+    summary = "Invalid geometry: the exported solid fails the benchmark validity gate."
+    if critique is None:
+        return Critique(
+            matches_spec=False, score=0, issues=[issue], suggestions=[], summary=summary
+        )
+    return critique.model_copy(
+        update={
+            "score": 0,
+            "matches_spec": False,
+            "issues": [issue, *critique.issues],
+            "summary": f"{summary} {critique.summary}",
+        }
     )
 
 
@@ -410,6 +567,7 @@ def _build_prompt(
     constraints: DrawingConstraints | None = None,
     primitive_digests: list[str] | None = None,
     reference_images: list[DrawingAttachment] | None = None,
+    base_briefing: str | None = None,
 ) -> str | list:
     """Generator prompt. Plain str for text-only runs (byte-identical to before);
     a [text, *images] list when drawings are present so the model re-reads the
@@ -433,6 +591,11 @@ def _build_prompt(
     if primitive_digests:
         text += "\n\n## Deterministic drawing primitive extraction:\n"
         text += "\n".join(f"- {d}" for d in primitive_digests)
+    if base_briefing:
+        # Repeated every iteration rather than sent once: it is the map the model needs to
+        # locate the feature, and a refinement iteration re-selecting geometry from memory
+        # is exactly where a correct edit drifts onto the wrong face.
+        text += f"\n\n{base_briefing}"
     if reference_images:
         text += (
             "\n\n(The attached image(s) show the CURRENT state of the model you are "
@@ -649,6 +812,8 @@ def _persist_final(result: RunResult) -> None:
         (final_dir / "critique.json").write_text(
             result.best.critique.model_dump_json(indent=2)
         )
+    if result.edit_diff is not None:
+        (final_dir / "edit_diff.json").write_text(result.edit_diff.model_dump_json(indent=2))
 
 
 def _write_report(result: RunResult, config: RunConfig) -> None:

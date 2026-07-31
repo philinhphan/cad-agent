@@ -17,6 +17,13 @@ Contract:
 - the query (JSON in <query_file>) is one of:
     {"mode": "describe"}
     {"mode": "selector", "target": "edges"|"faces", "selector": "<sel>"}
+    {"mode": "query", "target": "edges"|"faces", "where": {...}, "limit": <n>?}
+  "query" is the imported-B-rep feature finder: `where` accepts type, area_min/max,
+  length_min/max, radius_min/max, normal (unit vector) and center_box
+  ([xmin,ymin,zmin,xmax,ymax,zmax]); results come back largest-first with the full match
+  count and the model's absolute bounds. "describe" is unchanged and still caps each
+  geomType group at 12 entities in traversal order — fine for a part you just built, useless
+  on a 1000-face import, which is exactly the gap "query" exists to close.
 - on success: writes the JSON result to stdout, exit 0.
 - if the USER CODE fails: traceback on stderr, exit 1 (the model must fix the code).
   A bad *selector* is NOT a code failure — it returns a normal result with
@@ -104,6 +111,37 @@ def _face_info(f):
     return info
 
 
+def _face_info_rich(f):
+    """`_face_info` plus the radius and axis of a cylindrical / conical face.
+
+    Kept separate so `describe` output stays exactly what it has always been — this only
+    feeds `query`, which is opt-in. CadQuery exposes radius on edges but not on faces, and
+    face radius is precisely what an edit instruction names ("the largest-diameter bore",
+    "the two 5 mm holes"): a filter on it finds a bore that no combination of area and centre
+    could isolate.
+    """
+    info = _face_info(f)
+    try:
+        kind = f.geomType()
+        if kind in ("CYLINDER", "CONE"):
+            from OCP.BRepAdaptor import BRepAdaptor_Surface
+
+            adaptor = BRepAdaptor_Surface(f.wrapped)
+            surface = adaptor.Cylinder() if kind == "CYLINDER" else adaptor.Cone()
+            axis = surface.Axis()
+            direction, location = axis.Direction(), axis.Location()
+            info["radius"] = _round3(
+                surface.Radius() if kind == "CYLINDER" else surface.RefRadius()
+            )
+            info["axis"] = [_round3(direction.X()), _round3(direction.Y()), _round3(direction.Z())]
+            info["axis_point"] = [
+                _round3(location.X()), _round3(location.Y()), _round3(location.Z())
+            ]
+    except Exception:  # noqa: BLE001 — best-effort enrichment, never a probe failure
+        pass
+    return info
+
+
 def _grouped(entities, info_fn):
     """Group entities by geomType: full counts + a capped sample of each group."""
     from collections import OrderedDict
@@ -122,6 +160,75 @@ def _grouped(entities, info_fn):
             }
         )
     return out
+
+
+def _matches(info, where):
+    """Does one entity's info dict satisfy the `where` filter?
+
+    Unknown filter keys are ignored rather than rejected: a filter is a narrowing aid, and
+    failing the whole query over a typo would cost the caller an entire probe round-trip for
+    no diagnostic gain (`count` already tells them if they narrowed to nothing).
+    """
+    if not where:
+        return True
+    wanted_type = where.get("type")
+    if wanted_type and info.get("type") != wanted_type:
+        return False
+    for key, field in (("area_min", "area"), ("length_min", "length"), ("radius_min", "radius")):
+        if key in where and (info.get(field) is None or info[field] < where[key]):
+            return False
+    for key, field in (("area_max", "area"), ("length_max", "length"), ("radius_max", "radius")):
+        if key in where and (info.get(field) is None or info[field] > where[key]):
+            return False
+    normal = where.get("normal")
+    if normal is not None:
+        actual = info.get("normal")
+        if actual is None:
+            return False
+        # Dot product against a unit direction: 0.99 keeps faces within ~8 degrees, loose
+        # enough to survive a slightly-off authored normal, tight enough to separate axes.
+        if sum(a * b for a, b in zip(actual, normal)) < 0.99:
+            return False
+    box = where.get("center_box")
+    if box is not None:
+        center = info.get("center")
+        if center is None:
+            return False
+        if any(not (box[i] <= center[i] <= box[i + 3]) for i in range(3)):
+            return False
+    return True
+
+
+def _query(wp, target, where, limit):
+    """Filtered, ranked listing of faces or edges — the imported-B-rep feature finder.
+
+    Returns the full match count alongside the (capped) list, so a caller can tell "my filter
+    matched 4 faces" from "my filter matched 400 and you are seeing 20 of them".
+    """
+    if target not in ("edges", "faces"):
+        return {"target": target, "count": 0,
+                "query_error": f"target must be 'edges' or 'faces', got {target!r}"}
+    info_fn = _edge_info if target == "edges" else _face_info_rich
+    infos = [info_fn(e) for e in getattr(wp, target)().vals()]
+    matched = [info for info in infos if _matches(info, where)]
+    # Largest-first, so a truncated result shows the features an instruction is likely to be
+    # naming. Traversal order is an artifact of how the B-rep was authored and, on an
+    # imported model, effectively arbitrary.
+    matched.sort(key=lambda info: info.get("area", info.get("length", 0.0)), reverse=True)
+    bb = wp.val().BoundingBox()
+    return {
+        "target": target,
+        "where": where,
+        "count": len(matched),
+        "total": len(infos),
+        "matches": matched[:limit],
+        "truncated": len(matched) > limit,
+        # Absolute bounds, unlike describe's extents: positioning a cutting primitive by
+        # coordinate needs to know where the part actually sits, not just how big it is.
+        "model_bbox_min_mm": [_round3(bb.xmin), _round3(bb.ymin), _round3(bb.zmin)],
+        "model_bbox_max_mm": [_round3(bb.xmax), _round3(bb.ymax), _round3(bb.zmax)],
+        "query_error": None,
+    }
 
 
 def _describe(wp):
@@ -184,6 +291,13 @@ def main() -> None:
     mode = query.get("mode", "describe")
     if mode == "selector":
         result = _run_selector(wp, query.get("target", "edges"), query.get("selector", ""))
+    elif mode == "query":
+        result = _query(
+            wp,
+            query.get("target", "faces"),
+            query.get("where") or {},
+            int(query.get("limit") or _MAX_PER_GROUP),
+        )
     else:
         result = _describe(wp)
     result["mode"] = mode

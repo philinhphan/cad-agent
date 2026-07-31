@@ -100,6 +100,8 @@ def _fmt_entity(e: dict, with_type: bool = True) -> str:
         parts.append(f"dir {_fmt_pt(e['dir'])}")
     if "radius" in e:
         parts.append(f"r{e['radius']:g}")
+    if "axis" in e:
+        parts.append(f"axis {_fmt_pt(e['axis'])}")
     if "length" in e:
         parts.append(f"len {e['length']:g}")
     if "area" in e:
@@ -127,6 +129,27 @@ def format_describe(data: dict) -> str:
         "Use these coordinates to write a selector that matches the edges/faces you intend "
         "to modify, then confirm it with check_selector before applying fillet/chamfer/shell.",
     ]
+    return "\n".join(lines)
+
+
+def format_query(data: dict) -> str:
+    """Render a `query` probe: what the filter found, and how much it did not show."""
+    if data.get("query_error"):
+        return f"find_geometry could not run: {data['query_error']}"
+    target, count, total = data["target"], data["count"], data["total"]
+    lo, hi = data["model_bbox_min_mm"], data["model_bbox_max_mm"]
+    head = f"{count} of {total} {target} match this filter"
+    if count == 0:
+        return (
+            f"{head}. Nothing matched — loosen the filter (a too-tight radius or normal "
+            f"tolerance is the usual cause). Model bounds: {_fmt_pt(lo)} to {_fmt_pt(hi)} mm."
+        )
+    shown = data.get("matches", [])
+    lines = [f"{head} (largest first, showing {len(shown)}):"]
+    lines += [f"  - {_fmt_entity(e)}" for e in shown]
+    if data.get("truncated"):
+        lines.append(f"  ... and {count - len(shown)} more — narrow the filter or raise limit")
+    lines.append(f"Model bounds: {_fmt_pt(lo)} to {_fmt_pt(hi)} mm.")
     return "\n".join(lines)
 
 
@@ -245,22 +268,33 @@ def build_generator_agent(
             "corrected script."
         )
 
-    def _probe(ctx: RunContext[IterationWorkspace], code: str, query: dict) -> str | None:
-        """Run a read-only probe; return an error/budget message, or None on success."""
+    def _probe(
+        ctx: RunContext[IterationWorkspace], code: str, query: dict
+    ) -> tuple[str | None, dict | None]:
+        """Run a read-only probe. Returns (error_message, data) — exactly one is set.
+
+        The data is RETURNED rather than left for the caller to read back off
+        `ws.introspections[-1]`. A model may emit several tool calls in one turn and
+        pydantic-ai runs them concurrently, so `[-1]` can be a sibling probe's result:
+        that is how a `check_selection` result reached `format_describe` and raised
+        `KeyError: 'bbox_mm'` mid-benchmark.
+        """
         ws = ctx.deps
         if len(ws.introspections) >= ws.max_inspect:
             return (
                 "INSPECTION BUDGET EXHAUSTED: stop probing and commit to a script with "
-                "execute_cad_code."
+                "execute_cad_code.",
+                None,
             )
         result = ws.introspect(code, query)
         if not result.ok or result.data is None:
             return (
                 "The probe could not build your code:\n"
                 f"{result.error}\n"
-                "Fix the code, then probe or run it again."
+                "Fix the code, then probe or run it again.",
+                None,
             )
-        return None
+        return None, result.data
 
     @agent.tool
     def inspect_geometry(ctx: RunContext[IterationWorkspace], code: str) -> str:
@@ -269,8 +303,8 @@ def build_generator_agent(
         you actually built before selecting edges/faces to modify. Does not consume the
         execute_cad_code attempt budget.
         """
-        err = _probe(ctx, code, {"mode": "describe"})
-        return err if err is not None else format_describe(ctx.deps.introspections[-1].data)
+        err, data = _probe(ctx, code, {"mode": "describe"})
+        return err if err is not None else format_describe(data)
 
     # The two libraries select geometry in fundamentally different ways — CadQuery with
     # string selectors, build123d with ShapeList expressions — so each gets the probe tool
@@ -289,8 +323,8 @@ def build_generator_agent(
             Does not consume the execute_cad_code budget.
             """
             query = {"mode": "selection", "expression": expression}
-            err = _probe(ctx, code, query)
-            return err if err is not None else format_selection(ctx.deps.introspections[-1].data)
+            err, data = _probe(ctx, code, query)
+            return err if err is not None else format_selection(data)
 
     else:
 
@@ -304,7 +338,62 @@ def build_generator_agent(
             selection crashes the real script. Does not consume the execute_cad_code budget.
             """
             query = {"mode": "selector", "target": target, "selector": selector}
-            err = _probe(ctx, code, query)
-            return err if err is not None else format_selector(ctx.deps.introspections[-1].data)
+            err, data = _probe(ctx, code, query)
+            return err if err is not None else format_selector(data)
+
+    # Editing only. `inspect_geometry` samples 12 entities per geometry type in traversal
+    # order, which is plenty for a part the model just built and useless on an imported base
+    # carrying 334-2157 faces — there, the sample is effectively random and the feature the
+    # instruction names is almost certainly not in it. Registered only in editing mode so the
+    # generation agent's tool set is untouched.
+    if editing:
+
+        @agent.tool
+        def find_geometry(
+            ctx: RunContext[IterationWorkspace],
+            code: str,
+            target: str = "faces",
+            geom_type: str | None = None,
+            area_min: float | None = None,
+            area_max: float | None = None,
+            radius_min: float | None = None,
+            radius_max: float | None = None,
+            normal: list[float] | None = None,
+            center_box: list[float] | None = None,
+            limit: int = 20,
+        ) -> str:
+            """Read-only probe: build `code`, then FIND the faces or edges matching a filter,
+            largest first, with their coordinates. This is how you locate a feature on an
+            imported base model — `inspect_geometry` only samples a handful per type.
+
+            `target`: 'faces' (default) or 'edges'.
+            `geom_type`: 'PLANE', 'CYLINDER', 'CONE', 'CIRCLE', 'LINE', 'BSPLINE', ...
+            `area_min`/`area_max`: mm2, faces only.
+            `radius_min`/`radius_max`: mm — matches CYLINDER/CONE faces and CIRCLE edges, so
+                this is how you find a bore of a known size ("the largest-diameter bore").
+            `normal`: unit vector, e.g. [1,0,0] for faces looking along +X (within ~8 deg).
+            `center_box`: [xmin,ymin,zmin,xmax,ymax,zmax] — restrict to a region, e.g. the
+                +X half of the part.
+            `limit`: how many matches to show (the full match count is always reported).
+
+            Reports the model's absolute bounding box too, so you can position a cutting
+            primitive by coordinate. Does not consume the execute_cad_code budget.
+            """
+            where: dict = {}
+            if geom_type:
+                where["type"] = geom_type
+            for key, value in (
+                ("area_min", area_min),
+                ("area_max", area_max),
+                ("radius_min", radius_min),
+                ("radius_max", radius_max),
+                ("normal", normal),
+                ("center_box", center_box),
+            ):
+                if value is not None:
+                    where[key] = value
+            query = {"mode": "query", "target": target, "where": where, "limit": limit}
+            err, data = _probe(ctx, code, query)
+            return err if err is not None else format_query(data)
 
     return agent

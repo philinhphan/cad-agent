@@ -6,7 +6,13 @@ code, the code runs in a sandboxed subprocess, the resulting solid is rendered a
 **reprojected against the drawing by a deterministic geometric arbiter**, a **vision-model
 critic** scores it, and the code is refined iteratively until it passes a quality
 threshold. An optional text description can be supplied alongside the drawing to
-disambiguate.
+disambiguate. The same loop also **edits an existing model** from a text instruction.
+
+The design principle throughout: the LLM proposes, and something deterministic decides. Every
+signal the critic is given — kernel-measured metrics, the reprojection overlap, the OCCT
+validity verdict, the before/after edit diff — is computed from the geometry, not
+self-reported, and the ones that are unambiguous (an invalid solid, an unchanged model)
+override the critic outright rather than arguing with it.
 
 Built on [PydanticAI](https://ai.pydantic.dev/), so it is **LLM-agnostic** — any
 supported provider works by changing one model string (OpenAI by default). Ships with a
@@ -28,11 +34,18 @@ drawing (+ optional text) ─► ORCHESTRATOR (outer loop: quality)
           ▼
    REPROJECT check ─► deterministic overlap score + overlay (missing/extra lines)
           ▼
+   VALIDITY gate ─► OCCT BRepCheck + closed shells + manifold mesh (invalid ⇒ score 0)
+          ▼
    CRITIC agent (vision) ─► Critique{score 0-10, matches_spec, issues, suggestions}
           │
           ├─ score ≥ threshold ─► ACCEPT: final/ + report.md
-          └─ else: feedback + overlay → next iteration (budget-capped, best effort wins)
+          └─ else: feedback + overlay → next iteration (budget-capped, best VALID one wins)
 ```
+
+The same loop also runs in **editing mode** — given an existing STEP and an instruction,
+modify that model instead of building one from scratch. The drawing stages fall away and the
+base model takes their place: it is seeded into the sandbox, inventoried into a feature
+briefing for the generator, and used as the reference the candidate is measured against.
 
 ---
 
@@ -107,8 +120,10 @@ drawing (+ optional text) ─► ORCHESTRATOR (outer loop: quality)
 - **Python ≥ 3.12**
 - **[uv](https://docs.astral.sh/uv/)** — the Python package/dependency manager used here.
   Install: `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- An **LLM API key** — a single **Google/Gemini** key covers all default agents.
-  ([Get one here.](https://aistudio.google.com/apikey))
+- An **LLM API key** — a single **OpenAI** key covers all default agents
+  ([get one here](https://platform.openai.com/api-keys)). Any agent can be pointed at
+  Google/Gemini or Anthropic instead by changing its `provider:` prefix; see
+  [Configuration reference](#configuration-reference).
 - *(Web dashboard only)* **Node.js ≥ 20** and **[pnpm](https://pnpm.io/installation)**.
 - *(Docker deploy only)* **Docker**.
 
@@ -273,10 +288,29 @@ async def main():
 asyncio.run(main())
 ```
 
-`generate_cad(spec, config, *, drawings=..., interpretation=..., on_iteration=...)`
-returns a `RunResult{accepted, best, iterations, run_dir, ...}`. Most collaborators
+`generate_cad(spec, config, *, drawings=..., interpretation=..., base_step=...,
+reference_images=..., on_iteration=...)` returns a
+`RunResult{accepted, best, iterations, run_dir, edit_diff, ...}`. Most collaborators
 (models, executor, renderer, reprojector, `on_iteration` callback) are injectable for
 testing.
+
+Passing `base_step` (the bytes of an existing model) switches the run to **editing mode** —
+modify that model per the instruction instead of building from scratch:
+
+```python
+result = await generate_cad(
+    "Remove the groove inside the largest-diameter bore.",
+    RunConfig(max_iterations=5),
+    base_step=Path("input.step").read_bytes(),
+)
+print(result.edit_diff.digest)  # what material the edit actually moved, and where
+```
+
+Two `RunConfig` knobs gate the deterministic checks, both on by default and neither
+env-configurable: `validity_gate` (per-iteration OCCT validity, with `validity_timeout_s`)
+and `edit_diff` (the post-loop boolean diff, with `edit_diff_timeout_s` and
+`edit_diff_max_candidates`). Turn them off only for runs that will never be submitted —
+the validity gate costs one subprocess per iteration.
 
 ---
 
@@ -343,13 +377,30 @@ correctness loop** (the generator retries on tracebacks):
    located boxes. A **deterministic, resolution-independent overlap score** judges it — a
    VLM only *proposes* the boxes, so the check can only false-negative, never fake a pass.
    It emits a colour-coded overlay (blue = missing, orange = extra, red = match).
-7. **Critique** — the vision critic receives the spec, measured metrics, code, the
-   reproject digest/verdict, and the images, returning a structured `Critique` with a 0–10
-   score. A **soft-cap** forbids a passing score when the reproject check failed unless the
-   overlay shows the flagged views are actually correct.
-8. **Accept or refine** — score ≥ threshold accepts; otherwise champion-anchored feedback
-   plus the overlay are carried into the next iteration. If the budget runs out, the
-   best-scoring iteration is returned (exit 1).
+7. **Check validity** — the exported STEP is run through CADGenBench's own validity gate
+   (OCCT `BRepCheck_Analyzer`, closed shells, manifold tessellation), in a subprocess with a
+   timeout because OCCT will not honour a Python signal mid-call. Like the reprojection check
+   this runs *before* the critic, so its verdict grounds the critique instead of competing
+   with it. A gate that could not run is "no verdict", never a rejection.
+8. **Critique** — the vision critic receives the spec, measured metrics, code, the reproject
+   and validity digests, and the images, returning a structured `Critique` with a 0–10 score.
+   A **soft-cap** forbids a passing score when the reproject check failed unless the overlay
+   shows the flagged views are actually correct. Then the deterministic overrides apply: an
+   invalid solid scores 0 on the benchmark whatever else is right about it, so its critique is
+   forced to 0 with the OCCT reason attached as the top-priority issue.
+9. **Accept or refine** — score ≥ threshold accepts; otherwise champion-anchored feedback
+   plus the overlay are carried into the next iteration. Champion choice is
+   **validity-first**: a valid iteration scoring 5 outranks an invalid one scoring 9, because
+   the latter is worth zero. If the budget runs out, the best iteration is returned (exit 1).
+
+**Editing mode** (`generate_cad(..., base_step=...)`) follows the same loop with the drawing
+pipeline dormant and three substitutions: the base model is seeded into every sandbox dir as
+`input.step`, a measured **feature briefing** of it goes into every prompt, and the
+drawing-vs-solid arbiter is replaced by two base-vs-candidate ones — a per-iteration
+volume/bbox **no-op guard** and, once after the loop, a boolean **edit diff** that measures
+exactly what material the edit added and removed, and where. Both hard-override the critic:
+a measured no-op or invalid solid cannot be accepted regardless of what the renders looked
+like.
 
 The **reprojection signal** is the key correctness anchor for drawings — see
 [`src/cad_gen/reproject/README.md`](src/cad_gen/reproject/README.md) and
@@ -369,11 +420,16 @@ design. The end-to-end I/O of every stage is documented in **[`pipeline.md`](pip
 │   ├── models.py              # Pydantic data models (RunConfig, RunResult, Critique, …)
 │   ├── imaging.py             # image helpers
 │   ├── drawing_constraints.py # structured dimension assertions from the digest
+│   ├── step_metrics.py        # volume/bbox of a STEP via raw OCP; editing no-op guard
+│   ├── step_validity.py       # CADGenBench's validity gate + OCCT repair ladder
+│   ├── edit_diff.py           # boolean before/after diff of an edit against its base
+│   ├── base_briefing.py       # feature inventory (bores, walls) of an editing base model
 │   ├── agents/                # PydanticAI agents
-│   │   ├── generator.py       #   writes CadQuery code (+ execute_cad_code tool)
+│   │   ├── generator.py       #   writes CAD code (execute_cad_code, inspect_geometry,
+│   │   │                      #   check_selector/check_selection, find_geometry [editing])
 │   │   ├── critic.py          #   vision critic → Critique
 │   │   ├── drawing_parser.py  #   drawing → dimension digest
-│   │   └── prompts.py         #   system prompts
+│   │   └── prompts.py         #   system prompts (generation + editing variants)
 │   ├── sandbox/               # subprocess execution of generated code
 │   │   ├── executor.py · harness.py · introspect.py
 │   ├── rendering/renderer.py  # headless NumPy z-buffer 4-view render
@@ -383,10 +439,9 @@ design. The end-to-end I/O of every stage is documented in **[`pipeline.md`](pip
 │   │   ├── adapter.py         #   runs check.py, builds LLM-facing overlays/digest
 │   │   ├── drawing_primitives.py · eval_drawings.py
 │   │   └── README.md · DECISIONS.md
-│   ├── eval/checks.py         # evaluation helpers
 │   ├── bench/                 # CADGenBench harness (cad-gen-bench, optional `bench` extra)
 │   │   ├── dataset.py         #   fetch + parse benchmark samples from the HF Hub
-│   │   ├── adapter.py         #   sample → generate_cad → output.step (sample_to_request)
+│   │   ├── adapter.py         #   sample → generate_cad → output.step; validity fallback chain
 │   │   ├── submission.py      #   assemble the leaderboard submission zip
 │   │   └── cli.py             #   Typer CLI: run · package
 │   └── web/                   # FastAPI backend (server.py, runs.py, schemas.py)
@@ -416,8 +471,19 @@ iter_NN/
   attempt_MM/{model.py,model.stl,model.step,metrics.json}
   views.png                             # render
   reproject/{report.json,overlay_*.png} # drawing-vs-solid check
-  iteration.json
+  iteration.json                        # incl. the validity verdict + edit delta
 final/  model.py  model.stl  model.step  views.png  critique.json
+```
+
+An **editing** run (`base_step=...`) adds:
+
+```
+input/input.step                        # the base model, as seeded into the sandbox
+input/reference_NN.png                  # the base model's renders
+input/base_briefing.md                  # measured bore / wall inventory of the base
+iter_NN/edit_diff_lumps.stl             # material this candidate moved (per candidate diffed)
+final/edit_diff.json                    # the chosen candidate's measured before/after diff
+final/edit_diff.png                     # 4-view render of just the changed material
 ```
 
 ---
@@ -463,13 +529,27 @@ breakdown, and validity rate.
   `cq.importers.importStep("input.step")`, applies the requested change, and preserves the
   rest — the shape axis is renormalized against the no-op baseline, so a minimal correct
   edit is what scores. The base model's `renders/` are attached to the generator and a
-  before/after-aware critic as reference. Editing cannot be self-scored locally (the no-op
-  baseline lives in the private ground truth).
+  before/after-aware critic as reference. The final CAD Score cannot be computed locally
+  (the no-op baseline lives in the private ground truth), but the two things that reliably
+  zero it can be, and are:
+  - **Validity** (`step_validity.py`): every iteration's exported STEP is run through the
+    benchmark's own gate — OCCT `BRepCheck_Analyzer`, closed shells, and a manifold
+    tessellation. An invalid candidate has its critique forced to 0 with the OCCT reason
+    fed back, and validity outranks the critic's score when picking a champion. If nothing
+    valid comes out, a repair ladder is tried, and failing that an editing sample ships its
+    unmodified `input.step` — worth up to 0.4 where an invalid edit is worth 0. The summary
+    prints every fallback in red; they are failures, not successes.
+  - **Locality** (`edit_diff.py`): the champion is cut against the base model both ways, so
+    what the edit actually added and removed is measured, not eyeballed. This is what
+    catches an over-cut or a from-scratch rebuild — both of which change plenty and so slip
+    past the volume/bbox no-op guard.
+- **Editing generators get a base-model briefing** (`base_briefing.py`): a measured inventory
+  of `input.step`'s bores (radius, axis, extent, through/blind) and planar walls (normal,
+  offset, area), plus a `find_geometry` probe that filters faces by type, radius, normal or
+  region. Instructions name features in engineering language ("the largest-diameter bore"),
+  and `inspect_geometry` alone samples too few faces of a 1000-face import to find them.
 - Each sample's full self-refine trace lands beside its candidate under
   `results/<run>/<sample>/cadgen/` for debugging; only `output.step` is packaged.
-- The `run` summary flags any candidate that isn't a single watertight solid — a cheap
-  local proxy for the benchmark's validity gate (which scores non-watertight / multi-solid
-  parts 0), using metrics cad-gen already computes.
 - **Where the benchmark framing lives:** `sample_to_request` / `sample_to_edit_request` in
   `src/cad_gen/bench/adapter.py` compose the cad-gen spec (millimetres, single watertight
   solid; drawing-authoritative for generation, minimal-change for editing). The benchmark
@@ -488,6 +568,13 @@ uv run ruff check .  # lint
 Tests use PydanticAI's `TestModel`/`FunctionModel` with `ALLOW_MODEL_REQUESTS=False`, so
 the entire loop — agents, sandbox, renderer, reprojection — is exercised without any API
 key or network access.
+
+The geometric checks are tested against **real OCCT**, not mocks: the validity gate, the
+boolean edit diff and the base-model briefing all run on STEP files the tests export with
+CadQuery. That is what makes them worth having — a mocked `BRepCheck` would agree with
+whatever the code believed. The generator's system prompts are pinned to snapshots under
+`tests/snapshots/`, so rewording one is a deliberate act (regenerate them in the same
+commit) rather than an accident.
 
 ---
 
@@ -521,12 +608,30 @@ key or network access.
 
 ## Known limitations
 
-Simple prismatic parts (plates, brackets, blocks, holes, fillets) converge reliably. Parts
-needing a swept feature *fused* to a body — e.g. a mug handle — are at the edge of current
-model capability: the model often leaves the feature as a separate, unfused solid, which
-the critic correctly rejects via the ground-truth `n_solids` check, so the run returns its
-best effort rather than a wrong "accepted". Refining from the best-so-far iteration keeps
-these hard cases from diverging but does not guarantee they solve within the budget.
+**Generation.** Simple prismatic parts (plates, brackets, blocks, holes, fillets) converge
+reliably. Parts needing a swept feature *fused* to a body — e.g. a mug handle — are at the
+edge of current model capability: the model often leaves the feature as a separate, unfused
+solid, which the critic correctly rejects via the ground-truth `n_solids` check, so the run
+returns its best effort rather than a wrong "accepted". Refining from the best-so-far
+iteration keeps these hard cases from diverging but does not guarantee they solve within the
+budget.
+
+**Editing** is harder, and the deterministic checks bound the damage rather than removing it:
+
+- The checks catch a bad edit; they do not produce a good one. A rejected candidate becomes a
+  retry, and if the budget runs out the run still ships its best effort (flagged).
+- **Not every invalid solid is repairable.** The OCCT repair ladder is verified through a STEP
+  round-trip, because a shape can pass `BRepCheck_Analyzer` in memory and fail again once
+  written and re-read — measured on a real candidate at 0.000000 % volume change. On the seven
+  invalid candidates of the audited v3 submission the ladder fixes **none**; it is kept as a
+  cheap rung for failure modes that run did not exhibit, and the fallback does the work.
+- **Some benchmark base models are themselves invalid.** Three of the 32 CADGenBench editing
+  inputs fail the validity gate as shipped, so for those there is no valid no-op to fall back
+  to and an inherited defect must be regenerated by the edit itself (a boolean *through* the
+  offending region usually does it) or the sample scores 0 either way.
+- `is_plausible_local_edit()` in `edit_diff.py` currently accepts every measured diff, so the
+  locality gate reports numbers without yet acting on them. Its docstring carries the
+  calibration data from the v3 audit.
 
 ---
 

@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from pydantic_ai import BinaryContent
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
@@ -15,10 +17,13 @@ from cad_gen.models import (
     IterationRecord,
     ReprojectionReport,
     RunConfig,
+    ValidityReport,
 )
 from cad_gen.orchestrator import (
     _build_feedback,
     _build_prompt,
+    _champion_key,
+    _force_invalid_critique,
     _match_key,
     _update_ledger,
     generate_cad,
@@ -888,3 +893,179 @@ async def test_default_library_keeps_the_executor_call_bare(tmp_path):
     )
 
     assert executor_kwargs == [{}]
+
+
+# ── validity-first champion selection ──────────────────────────────────────
+#
+# Motivation: a candidate that fails CADGenBench's validity gate scores 0 on the
+# leaderboard whatever its geometry looks like, so a valid iteration scoring 5 is worth
+# strictly more than an invalid one scoring 9. The old score-only key got that backwards,
+# and v3 shipped 7 invalid candidates.
+
+def _scored(index: int, score: int, *, validity: ValidityReport | None = None):
+    return IterationRecord(
+        index=index,
+        critique=Critique(
+            matches_spec=score >= 8, score=score, issues=[], suggestions=[], summary="x"
+        ),
+        validity=validity,
+    )
+
+
+_INVALID = ValidityReport(
+    evaluated=True, is_valid=False, errors=["Face: BRepCheck_UnorientableShape"]
+)
+_VALID = ValidityReport(evaluated=True, is_valid=True, is_watertight=True)
+
+
+class TestChampionKey:
+    def test_a_valid_low_score_beats_an_invalid_high_score(self):
+        low_valid = _scored(1, 5, validity=_VALID)
+        high_invalid = _scored(2, 9, validity=_INVALID)
+
+        assert max([low_valid, high_invalid], key=_champion_key) is low_valid
+
+    def test_score_still_decides_between_two_valid_iterations(self):
+        worse, better = _scored(1, 6, validity=_VALID), _scored(2, 9, validity=_VALID)
+
+        assert max([worse, better], key=_champion_key) is better
+
+    def test_score_still_decides_between_two_invalid_iterations(self):
+        """When nothing is valid there is no better option — fall back to the old ordering."""
+        worse, better = _scored(1, 3, validity=_INVALID), _scored(2, 7, validity=_INVALID)
+
+        assert max([worse, better], key=_champion_key) is better
+
+    def test_an_unevaluated_gate_is_not_a_rejection(self):
+        """A timed-out gate proves nothing; demoting on it would punish a good iteration."""
+        unknown = _scored(1, 9, validity=ValidityReport(evaluated=False, unknown_reason="timeout"))
+        valid_but_worse = _scored(2, 4, validity=_VALID)
+
+        assert max([unknown, valid_but_worse], key=_champion_key) is unknown
+
+    def test_iterations_without_a_gate_are_unaffected(self):
+        """Generation runs with the gate disabled must rank exactly as they always did."""
+        first, second = _scored(1, 7), _scored(2, 9)
+
+        assert max([first, second], key=_champion_key) is second
+
+
+class TestForceInvalidCritique:
+    def test_zeroes_a_passing_critique_and_keeps_the_occt_reason(self):
+        passing = Critique(
+            matches_spec=True, score=9, issues=[], suggestions=[], summary="looks great"
+        )
+
+        forced = _force_invalid_critique(passing, _INVALID)
+
+        assert forced.score == 0 and forced.matches_spec is False
+        assert "BRepCheck_UnorientableShape" in forced.issues[0]
+
+    def test_handles_a_missing_critique(self):
+        forced = _force_invalid_critique(None, _INVALID)
+
+        assert forced.score == 0 and forced.issues
+
+
+# ── editing mode end to end (real geometry through the real gates) ──────────
+
+def real_step_executor(base_bbox=(40.0, 30.0, 20.0), pocket_depth=5.0):
+    """Executor stub that exports REAL geometry, so the validity gate and edit diff run.
+
+    The default `stub_executor` writes `b"ISO-10303-21;"`, which no OCCT gate can parse —
+    fine for testing the loop's control flow, useless for testing the gates themselves.
+    """
+    import cadquery as cq
+
+    def _run(code: str, out_dir, timeout_s: float = 60, **kwargs) -> ExecutionResult:
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "model.py").write_text(code)
+        shape = cq.Workplane("XY").box(*base_bbox)
+        if "POCKET" in code:
+            shape = shape.faces(">Z").workplane().rect(10, 10).cutBlind(-pocket_depth)
+        cq.exporters.export(shape, str(out_dir / "model.step"))
+        cq.exporters.export(shape, str(out_dir / "model.stl"))
+        return ExecutionResult(
+            success=True,
+            code=code,
+            metrics=GeometryMetrics(
+                volume_mm3=shape.val().Volume(), bbox_mm=base_bbox,
+                center_of_mass=(0.0, 0.0, 0.0), n_solids=1, n_faces=6, is_watertight=True,
+            ),
+            stl_path=out_dir / "model.stl",
+            step_path=out_dir / "model.step",
+            duration_s=0.01,
+        )
+
+    return _run
+
+
+def _base_step_bytes(tmp_path, bbox=(40.0, 30.0, 20.0)) -> bytes:
+    import cadquery as cq
+
+    path = tmp_path / "seed.step"
+    cq.exporters.export(cq.Workplane("XY").box(*bbox), str(path))
+    return path.read_bytes()
+
+
+async def test_editing_run_briefs_the_generator_and_measures_the_edit(tmp_path):
+    """The editing path end to end: briefing into the prompt, gate + diff on the way out."""
+    prompts: list[str] = []
+    generator = scripted_generator(
+        [("tool", "POCKET: cut a 10x10x5 pocket"), ("text", "pocket cut")], prompts
+    )
+    critic = scripted_critic([critique_args(9, [])], [])
+    config = RunConfig(max_iterations=1, out_dir=tmp_path / "runs")
+
+    result = await generate_cad(
+        "Cut a 10x10 pocket 5 mm deep into the top face.",
+        config,
+        base_step=_base_step_bytes(tmp_path),
+        generator_model=generator,
+        critic_model=critic,
+        executor=real_step_executor(),
+        renderer=stub_renderer,
+    )
+
+    # The briefing reaches the generator, and is persisted for debugging.
+    assert "BASE MODEL BRIEFING" in prompts[0]
+    assert (result.run_dir / "input" / "base_briefing.md").exists()
+
+    # The validity gate ran on the exported STEP and passed.
+    assert result.best.validity is not None
+    assert result.best.validity.is_valid
+    assert result.best.gate_ok
+
+    # The edit diff measured the pocket: 10 x 10 x 5 = 500 mm3 removed, nothing added.
+    assert result.edit_diff is not None and result.edit_diff.evaluated
+    assert result.edit_diff.removed_volume_mm3 == pytest.approx(500.0, rel=1e-3)
+    assert result.edit_diff.added_volume_mm3 == pytest.approx(0.0, abs=1e-3)
+    assert (result.run_dir / "final" / "edit_diff.json").exists()
+
+    # The changed material is meshed and rendered for a human reading the run afterwards.
+    assert (result.run_dir / "final" / "edit_diff_lumps.stl").stat().st_size > 0
+    assert (result.run_dir / "final" / "edit_diff.png").exists()
+
+
+async def test_editing_noop_is_still_rejected_with_the_gates_on(tmp_path):
+    """The existing no-op guard must keep working now that validity runs alongside it."""
+    generator = scripted_generator(
+        [("tool", "return the base untouched"), ("text", "done")], []
+    )
+    critic = scripted_critic([critique_args(9, [])], [])
+    config = RunConfig(max_iterations=1, out_dir=tmp_path / "runs")
+
+    result = await generate_cad(
+        "Cut a pocket.",
+        config,
+        base_step=_base_step_bytes(tmp_path),
+        generator_model=generator,
+        critic_model=critic,
+        executor=real_step_executor(),  # no "POCKET" in the code => exports the base as-is
+        renderer=stub_renderer,
+    )
+
+    assert result.best.edit_delta is not None and result.best.edit_delta.is_noop
+    assert result.best.critique.score == 0
+    assert result.accepted is False

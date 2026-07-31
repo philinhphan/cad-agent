@@ -459,3 +459,38 @@ def test_format_selection_renders_matches_and_errors():
     )
     assert "not a usable selection" in bad
     assert "RAISED" not in bad
+
+
+async def test_concurrent_probes_do_not_cross_results(tmp_path):
+    """Regression: two probes in ONE model turn must not read each other's data.
+
+    pydantic-ai runs tool calls emitted in the same response concurrently. The tools used
+    to read `ws.introspections[-1]` after probing, so a sibling probe finishing in between
+    handed `format_describe` a selection payload — observed live as
+    `KeyError: 'bbox_mm'`, which zeroed a CADGenBench sample.
+    """
+    describe_data = {"mode": "describe", **DESCRIBE_DATA}
+    selector_data = {"mode": "selector", **SELECTOR_DATA}
+    # Serve describe first, then the selector payload: whichever tool reads back the
+    # shared list last would see the wrong one.
+    payloads = [describe_data, selector_data]
+
+    def introspector(code, query, out_dir, timeout_s=30, **kwargs):
+        return IntrospectionResult(ok=True, data=payloads.pop(0))
+
+    ws = IterationWorkspace(iter_dir=tmp_path, introspector=introspector)
+
+    def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if len(messages) == 1:  # first turn: emit BOTH probes together
+            return ModelResponse(parts=[
+                ToolCallPart("inspect_geometry", {"code": GOOD_CODE}),
+                ToolCallPart("check_selector",
+                             {"code": GOOD_CODE, "target": "edges", "selector": "|Z"}),
+            ])
+        return ModelResponse(parts=[TextPart("done")])
+
+    agent = build_generator_agent(FunctionModel(model_fn))
+    result = await agent.run("a 10mm cube", deps=ws)
+
+    assert result.output == "done"
+    assert len(ws.introspections) == 2

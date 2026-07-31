@@ -6,6 +6,7 @@ generate_cad stubbed), resume/skip behaviour, and the submission zip contract.
 """
 import json
 import re
+import shutil
 import zipfile
 from pathlib import Path
 
@@ -390,3 +391,103 @@ def test_package_cli_warns_without_agree(tmp_path):
 
     assert result.exit_code == 0
     assert "agree_to_publish=false" in _plain(result.output)
+
+
+# ── validity gate, repair and the input fallback (real OCCT, real STEP) ─────
+#
+# Motivation: 5 of the 32 editing candidates in submission v3 failed the benchmark's
+# validity gate and scored 0. Three of those had a perfectly valid input.step sitting right
+# there — a valid no-op keeps the raw interface (0.3) and topology (0.1) axes, so shipping
+# the base model would have scored up to 0.4 instead of nothing.
+
+def _real_step(path: Path, *, valid: bool = True) -> Path:
+    """Write a real STEP: a closed box, or a single face (a surface, not a solid)."""
+    import cadquery as cq
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    solid = cq.Workplane("XY").box(20, 30, 10)
+    shape = solid if valid else cq.Workplane("XY").add(solid.faces(">Z").val())
+    cq.exporters.export(shape, str(path))
+    return path
+
+
+def _run_result_with_step(run_dir: Path, step_src: Path) -> RunResult:
+    result = _fake_run_result(run_dir)
+    shutil.copy2(step_src, run_dir / "final" / "model.step")
+    return result
+
+
+async def test_run_sample_reports_the_real_validity_gate(tmp_path, monkeypatch):
+    _make_sample(tmp_path / "inputs", "101", "description: a cube.\n")
+    sample = load_samples(tmp_path / "inputs")[0]
+    good = _real_step(tmp_path / "src" / "good.step")
+
+    async def fake(spec, config, *, drawings=None, **kw):
+        return _run_result_with_step(config.out_dir / "r", good)
+
+    monkeypatch.setattr("cad_gen.bench.adapter.generate_cad", fake)
+    outcome = await run_sample(sample, config=RunConfig(), out_root=tmp_path / "results")
+
+    assert outcome.gate_valid is True
+    assert outcome.valid_signal
+    assert not outcome.repaired and not outcome.fell_back_to_input
+
+
+async def test_editing_falls_back_to_a_valid_input_when_the_candidate_is_invalid(
+    tmp_path, monkeypatch
+):
+    sample_dir = _make_edit_sample(tmp_path / "inputs", "201")
+    base = _real_step(sample_dir / "input.step")  # a VALID base to fall back to
+    sample = load_samples(tmp_path / "inputs", task_type="editing")[0]
+    broken = _real_step(tmp_path / "src" / "broken.step", valid=False)
+
+    async def fake(spec, config, *, base_step=None, reference_images=None, **kw):
+        return _run_result_with_step(config.out_dir / "r", broken)
+
+    monkeypatch.setattr("cad_gen.bench.adapter.generate_cad", fake)
+    outcome = await run_sample(sample, config=RunConfig(), out_root=tmp_path / "results")
+
+    assert outcome.fell_back_to_input, "an invalid edit scores 0; a valid no-op scores up to 0.4"
+    assert outcome.gate_valid is True
+    out_path = output_step_path(tmp_path / "results", "201")
+    assert out_path.read_bytes() == base.read_bytes()
+
+
+async def test_editing_keeps_the_candidate_when_the_input_is_also_invalid(
+    tmp_path, monkeypatch
+):
+    """3 of the 32 editing inputs (202, 240, 250) fail the gate as shipped.
+
+    Falling back to one of those would swap one zero for another AND throw the edit away,
+    so the candidate stays.
+    """
+    sample_dir = _make_edit_sample(tmp_path / "inputs", "202")
+    _real_step(sample_dir / "input.step", valid=False)
+    sample = load_samples(tmp_path / "inputs", task_type="editing")[0]
+    broken = _real_step(tmp_path / "src" / "broken.step", valid=False)
+
+    async def fake(spec, config, *, base_step=None, reference_images=None, **kw):
+        return _run_result_with_step(config.out_dir / "r", broken)
+
+    monkeypatch.setattr("cad_gen.bench.adapter.generate_cad", fake)
+    outcome = await run_sample(sample, config=RunConfig(), out_root=tmp_path / "results")
+
+    assert not outcome.fell_back_to_input
+    assert outcome.gate_valid is False
+    assert outcome.gate_errors
+
+
+async def test_generation_never_falls_back_to_an_input(tmp_path, monkeypatch):
+    """The fallback is an editing-only concept: a generation sample has no base model."""
+    _make_sample(tmp_path / "inputs", "101", "description: a cube.\n")
+    sample = load_samples(tmp_path / "inputs")[0]
+    broken = _real_step(tmp_path / "src" / "broken.step", valid=False)
+
+    async def fake(spec, config, *, drawings=None, **kw):
+        return _run_result_with_step(config.out_dir / "r", broken)
+
+    monkeypatch.setattr("cad_gen.bench.adapter.generate_cad", fake)
+    outcome = await run_sample(sample, config=RunConfig(), out_root=tmp_path / "results")
+
+    assert not outcome.fell_back_to_input
+    assert outcome.gate_valid is False

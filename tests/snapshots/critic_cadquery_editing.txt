@@ -7,16 +7,24 @@ You are a meticulous CAD design reviewer grading an EDIT to an existing model. Y
    the EDITED (after) model. The following image(s) show the ORIGINAL (before) model —
    isometric and orthographic renders of the base that was to be edited.
 
-Judge the edit on three things:
+Judge the edit on four things:
 - CHANGE APPLIED: was the requested modification carried out, correctly and completely?
   Compare the after views against the before views — the difference between them should be
   exactly the change the instruction describes (right feature, right faces, right amount /
   direction). Use the measured bounding box and volume to confirm the magnitude.
 - REST PRESERVED: is everything the instruction did NOT mention identical to the before
   model? Unrequested changes, deleted features, or a part visibly re-modelled from scratch
-  are defects — penalize them even if the requested change is also present.
-- VALIDITY: exactly one solid body unless the instruction requires more; watertight should
-  be true; the volume must be plausible for the shape.
+  are defects — penalize them even if the requested change is also present. The shape score
+  is measured against the unmodified input, so drift in untouched geometry costs as much as
+  getting the edit wrong.
+- MAGNITUDE: is the measured volume change the right SIZE for what was asked? A local edit
+  that moves a large fraction of the part's volume has done something other than what the
+  instruction said, however plausible the renders look. Read the measured change block: it
+  is ground truth, and it sees what a shaded render cannot.
+- VALIDITY: when a validity-gate block is present it is authoritative — a solid that fails
+  the gate scores 0 on the benchmark whatever else is right, so it cannot score above 1 here.
+  Otherwise: exactly one solid body unless the instruction requires more, watertight true,
+  and a volume plausible for the shape.
 
 Scoring rubric (be strict):
 - 10: the requested edit is applied exactly and nothing else changed.
@@ -24,8 +32,10 @@ Scoring rubric (be strict):
 - 5-7: edit attempted but wrong in amount/location/extent, OR correct edit but some
   unrelated geometry drifted.
 - 2-4: wrong change, or the requested change is largely missing.
-- 0-1: NO-OP (after is indistinguishable from before) or the part was rebuilt from scratch,
-  broken, or unrelated — a model identical to the before is worthless regardless of validity.
+- 0-1: NO-OP (after is indistinguishable from before); the part was rebuilt from scratch,
+  broken, or unrelated; the part was moved/rotated as a whole; or the geometry fails the
+  validity gate. A model identical to the before is worthless regardless of validity, and an
+  invalid one is worthless regardless of shape.
 
 Set matches_spec = true only when score >= 8.
 issues: concrete, observable problems ("only 2 of the 4 +X pocket walls were moved", "the

@@ -19,6 +19,7 @@ from cad_gen.models import (
     ExecutionResult,
     ReasoningEffort,
     ReprojectionReport,
+    ValidityReport,
 )
 
 # How the reviewed code is labelled in the critique prompt, per CAD library.
@@ -74,6 +75,7 @@ async def run_critique(
     editing: bool = False,
     library: CadLibrary = DEFAULT_LIBRARY,
     edit_delta: EditDelta | None = None,
+    validity: ValidityReport | None = None,
 ) -> Critique:
     metrics_json = (
         execution.metrics.model_dump_json(indent=2) if execution.metrics else "{}"
@@ -136,6 +138,15 @@ async def run_critique(
             "## Measured change against the base model (deterministic)\n"
             f"{edit_delta.digest}\n\n"
         )
+    # Same reasoning: a B-rep defect is invisible in a shaded render. Only stated when the
+    # gate actually reached a verdict — reporting "could not be checked" as a finding would
+    # invite the critic to penalise geometry that was never examined.
+    validity_block = ""
+    if validity is not None and validity.evaluated:
+        validity_block = (
+            "## Benchmark validity gate (deterministic)\n"
+            f"{validity.digest}\n\n"
+        )
     constraint_block = ""
     if constraints is not None:
         constraint_block += (
@@ -152,6 +163,7 @@ async def run_critique(
         f"## Measured geometry (ground truth)\n{metrics_json}\n\n"
         f"## {_CODE_HEADING[library]} code that produced it\n"
         f"```python\n{execution.code}\n```\n\n"
+        f"{validity_block}"
         f"{edit_block}"
         f"{constraint_block}"
         f"{reproject_block}"

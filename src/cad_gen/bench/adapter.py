@@ -22,6 +22,7 @@ from cad_gen.bench.dataset import BenchSample
 from cad_gen.imaging import media_type_for
 from cad_gen.models import DrawingAttachment, RunConfig
 from cad_gen.orchestrator import generate_cad
+from cad_gen.step_validity import check_step_validity, repair_step
 
 CANDIDATE_NAME = "output.step"
 
@@ -39,14 +40,32 @@ class SampleOutcome(BaseModel):
     is_watertight: bool | None = None
     out_path: Path | None = None
     error: str | None = None
+    # Verdict of the benchmark's own validity gate on the file actually written, via
+    # `step_validity.check_step_validity`. None means the gate could not run (or was
+    # disabled) — no verdict, not a pass.
+    gate_valid: bool | None = None
+    gate_errors: list[str] = []
+    repaired: bool = False  # the shipped solid came out of the repair ladder
+    fell_back_to_input: bool = False  # editing: shipped the unmodified base, a partial failure
+    edit_plausible: bool | None = None  # editing: verdict of the boolean before/after diff
+    edit_verdict: str = ""
 
     @property
     def valid_signal(self) -> bool:
-        """Cheap proxy for the benchmark validity gate (watertight single solid).
+        """Whether the shipped candidate clears the benchmark's validity gate.
 
-        Uses metrics cad-gen already computed — not the exact CADGenBench gate,
-        but a candidate that fails this almost certainly fails there too.
+        Prefers the real gate (`gate_valid`, OCCT `BRepCheck` + closed shells + a manifold
+        tessellation, the same three checks the grader runs). Falls back to the old trimesh
+        proxy only when the gate did not run.
+
+        That proxy is kept solely as a fallback because it is unreliable in BOTH directions:
+        `is_watertight` comes from trimesh on the tessellated STL, so mesh sag on curved
+        faces fails a perfectly valid B-rep, while a B-rep defect like
+        `BRepCheck_UnorientableShape` passes it — v3 samples 238 and 240 did exactly that and
+        scored 0.
         """
+        if self.gate_valid is not None:
+            return self.gate_valid
         return self.step_written and self.n_solids == 1 and self.is_watertight is not False
 
 
@@ -199,13 +218,72 @@ async def run_sample(
         outcome.n_solids = execution.metrics.n_solids
         outcome.is_watertight = execution.metrics.is_watertight
 
+    if result.edit_diff is not None and result.edit_diff.evaluated:
+        outcome.edit_plausible = result.edit_diff.plausible
+        outcome.edit_verdict = result.edit_diff.verdict_reason
+
     step_src = _locate_step(result.run_dir, execution.step_path if execution else None)
     if step_src is not None:
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(step_src, out_path)
-        outcome.step_written = True
-        outcome.out_path = out_path
+        _write_candidate(step_src, out_path, sample=sample, outcome=outcome, config=config)
     return outcome
+
+
+def _write_candidate(
+    step_src: Path,
+    out_path: Path,
+    *,
+    sample: BenchSample,
+    outcome: SampleOutcome,
+    config: RunConfig,
+) -> None:
+    """Write the submission candidate, taking the best VALID option available.
+
+        candidate valid?      -> ship it
+        repair works?         -> ship the repaired solid
+        base input.step valid? (editing only) -> ship it unchanged
+        otherwise             -> ship the candidate anyway and flag it
+
+    The third rung looks like giving up, and in shape terms it is: CADGenBench renormalizes
+    an editing sample's shape score against the unmodified input, so a no-op scores 0 on the
+    0.6-weight axis. But interface (0.3) and topology (0.1) are scored raw, so a valid no-op
+    is worth up to 0.4 where an invalid edit is worth exactly 0. Taking 0.4 over 0 is the
+    right trade; pretending it is a success is not, which is why `fell_back_to_input` exists
+    and the run summary prints it.
+    """
+    shutil.copy2(step_src, out_path)
+    outcome.step_written = True
+    outcome.out_path = out_path
+    if not config.validity_gate:
+        return
+
+    validity = check_step_validity(out_path, timeout_s=config.validity_timeout_s)
+    outcome.gate_valid = validity.is_valid if validity.evaluated else None
+    outcome.gate_errors = list(validity.errors)
+    if validity.is_valid or not validity.evaluated:
+        return
+
+    repaired_path = out_path.with_name("repaired.step")
+    repaired = repair_step(out_path, repaired_path, timeout_s=config.validity_timeout_s)
+    if repaired.is_valid and repaired_path.exists():
+        shutil.move(str(repaired_path), out_path)
+        outcome.repaired = True
+        outcome.gate_valid = True
+        outcome.gate_errors = []
+        return
+    repaired_path.unlink(missing_ok=True)
+
+    if sample.task_type != "editing" or sample.step_path is None:
+        return
+    # The base model is not automatically a safe harbour: 3 of the 32 editing inputs
+    # (202, 240, 250) fail the gate as shipped, so falling back to one of those would swap
+    # one zero for another while also throwing away the edit.
+    base_validity = check_step_validity(sample.step_path, timeout_s=config.validity_timeout_s)
+    if base_validity.is_valid:
+        shutil.copy2(sample.step_path, out_path)
+        outcome.fell_back_to_input = True
+        outcome.gate_valid = True
+        outcome.gate_errors = []
 
 
 def _locate_step(run_dir: Path, step_path: Path | None) -> Path | None:

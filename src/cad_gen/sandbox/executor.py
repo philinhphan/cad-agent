@@ -152,6 +152,8 @@ def introspect_cad_code(
     library-specific because the two select geometry differently:
     {"mode": "selector", "target": "edges"|"faces", "selector": "<sel>"} for CadQuery,
     {"mode": "selection", "expression": "<expr>"} for build123d.
+    {"mode": "query", "target": ..., "where": {...}, "limit": n} is the filtered feature
+    finder both libraries share, used to locate features on an imported base model.
 
     Returns ok=False with the traceback when the *code* fails to build; a bad
     *selector/expression* comes back ok=True with the diagnostic inside `data`.

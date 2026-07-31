@@ -150,35 +150,69 @@ def _detail(o: SampleOutcome) -> str:
     if not o.step_written:
         return "no valid geometry produced"
     flags = []
+    if o.fell_back_to_input:
+        flags.append("FELL BACK to unmodified input.step")
+    if o.repaired:
+        flags.append("repaired")
+    if o.gate_valid is False:
+        flags.append("; ".join(o.gate_errors[:2]) or "fails the validity gate")
+    if o.edit_plausible is False:
+        flags.append(f"implausible edit: {o.edit_verdict}")
     if o.n_solids is not None and o.n_solids != 1:
         flags.append(f"n_solids={o.n_solids}")
-    if o.is_watertight is False:
-        flags.append("not watertight")
     return "; ".join(flags) if flags else ("accepted" if o.accepted else "best-effort")
+
+
+def _gate_cell(o: SampleOutcome) -> str:
+    if not o.step_written:
+        return "—"
+    if o.fell_back_to_input:
+        return "[red]no-op[/red]"
+    if o.gate_valid is None:
+        return "[dim]?[/dim]"
+    if o.gate_valid:
+        return "[green]valid[/green]" + (" (repaired)" if o.repaired else "")
+    return "[red]INVALID[/red]"
 
 
 def _print_summary(outcomes: list[SampleOutcome], out: Path) -> None:
     table = Table(title="CADGenBench candidates", show_lines=False)
-    for col in ("sample", "status", "score", "n_solids", "watertight"):
+    for col in ("sample", "status", "score", "gate", "n_solids", "detail"):
         table.add_column(col)
     for o in outcomes:
         table.add_row(
-            o.name, _status_cell(o), f"{o.score}/10",
+            o.name, _status_cell(o), f"{o.score}/10", _gate_cell(o),
             "—" if o.n_solids is None else str(o.n_solids),
-            "—" if o.is_watertight is None else str(o.is_watertight),
+            _detail(o),
         )
     console.print()
     console.print(table)
 
     written = [o for o in outcomes if o.step_written]
-    warn = [o for o in written if not o.valid_signal]
+    invalid = [o for o in written if o.gate_valid is False]
+    fallbacks = [o for o in written if o.fell_back_to_input]
+    implausible = [o for o in written if o.edit_plausible is False]
     console.print(
         f"\n{len(written)}/{len(outcomes)} candidates written to [bold]{out}[/bold]"
     )
-    if warn:
+    if invalid:
         console.print(
-            f"[yellow]⚠ {len(warn)} candidate(s) fail the watertight-single-solid signal[/yellow] "
-            f"({', '.join(o.name for o in warn)}) — likely to score 0 at the validity gate."
+            f"[red]✗ {len(invalid)} candidate(s) FAIL the benchmark validity gate[/red] "
+            f"({', '.join(o.name for o in invalid)}) — these score 0 regardless of geometry. "
+            "The repair ladder could not fix them and no valid fallback was available."
+        )
+    if fallbacks:
+        console.print(
+            f"[red]✗ {len(fallbacks)} editing sample(s) shipped the UNMODIFIED input[/red] "
+            f"({', '.join(o.name for o in fallbacks)}) — every candidate was invalid, so the "
+            "base model was submitted instead. Valid, but scores 0 on the shape axis: these "
+            "are failures, not successes."
+        )
+    if implausible:
+        console.print(
+            f"[yellow]⚠ {len(implausible)} editing candidate(s) look implausible[/yellow] "
+            f"({', '.join(o.name for o in implausible)}) — the measured before/after diff "
+            "does not look like the requested local edit. See each sample's edit_diff.json."
         )
     console.print(
         "\nNext: [bold]cad-gen-bench package[/bold] "
