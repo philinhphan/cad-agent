@@ -56,6 +56,7 @@ def test_help_lists_all_options():
         "--out",
         "--drawing",
         "--no-review",
+        "--library",
     ):
         assert option in result.output
 
@@ -137,6 +138,71 @@ def test_config_flags_reach_run_config(tmp_path, monkeypatch):
     assert cfg.critic_model == "google:gemini-3.5-pro"
     assert cfg.exec_timeout_s == 30
     assert cfg.out_dir == tmp_path / "elsewhere"
+    assert cfg.library == "cadquery"  # untouched by the other flags
+
+
+def test_library_flag_reaches_run_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    seen = {}
+
+    async def fake_generate_cad(spec, config=None, **kwargs):
+        seen["config"] = config
+        return _fake_run_result(True, tmp_path / "run")
+
+    monkeypatch.setattr("cad_gen.cli.generate_cad", fake_generate_cad)
+
+    result = runner.invoke(app, ["a cube", "--library", "build123d"])
+
+    assert result.exit_code == 0
+    # The enum member must reach RunConfig as the plain string its Literal expects.
+    assert seen["config"].library == "build123d"
+    assert isinstance(seen["config"].library, str)
+
+
+def test_unknown_library_rejected(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    result = runner.invoke(app, ["a cube", "--library", "openscad"])
+
+    assert result.exit_code != 0
+    assert "openscad" in result.output
+
+
+def test_missing_cad_library_fails_fast(tmp_path, monkeypatch):
+    """Without the preflight this surfaces as an ImportError in every sandbox attempt."""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("cad_gen.cli.importlib.util.find_spec", lambda name: None)
+
+    called = False
+
+    async def fake_generate_cad(spec, config=None, **kwargs):
+        nonlocal called
+        called = True
+        return _fake_run_result(True, tmp_path / "run")
+
+    monkeypatch.setattr("cad_gen.cli.generate_cad", fake_generate_cad)
+
+    result = runner.invoke(app, ["a cube", "--library", "build123d"])
+
+    assert result.exit_code == 2
+    assert "not installed" in result.output
+    assert "uv sync --extra build123d" in result.output
+    assert not called  # bailed before spending a single model call
+
+
+def test_default_library_needs_no_extra(tmp_path, monkeypatch):
+    """cadquery is a core dependency, so the preflight must never gate the default path."""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("cad_gen.cli.importlib.util.find_spec", lambda name: None)
+
+    async def fake_generate_cad(spec, config=None, **kwargs):
+        return _fake_run_result(True, tmp_path / "run")
+
+    monkeypatch.setattr("cad_gen.cli.generate_cad", fake_generate_cad)
+
+    result = runner.invoke(app, ["a cube"])
+
+    assert result.exit_code == 0
 
 
 def test_no_spec_and_no_drawing_exits_2(tmp_path, monkeypatch):

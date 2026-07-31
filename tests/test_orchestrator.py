@@ -832,3 +832,59 @@ def test_build_feedback_embeds_regression_diff():
     assert "```diff" in fb
     assert "# broke it" in fb  # the regressing line is shown to the model
     assert "regression" in fb.lower()
+
+
+# --- CAD library threading -----------------------------------------------------------
+
+
+async def test_library_reaches_executor_and_agents(tmp_path):
+    """config.library must drive the sandbox harness AND both agents' instructions."""
+    prompts: list[str] = []
+    executor_kwargs: list[dict] = []
+
+    def recording_executor(code, out_dir, timeout_s=60, **kwargs):
+        executor_kwargs.append(kwargs)
+        return stub_executor(code, out_dir, timeout_s=timeout_s)
+
+    generator = scripted_generator([("tool", GOOD_V1), ("text", "built")], prompts)
+    critic = scripted_critic([critique_args(9, [])], [])
+    config = RunConfig(
+        max_iterations=1, out_dir=tmp_path / "runs", library="build123d"
+    )
+
+    result = await generate_cad(
+        "a cube",
+        config,
+        generator_model=generator,
+        critic_model=critic,
+        executor=recording_executor,
+        renderer=stub_renderer,
+    )
+
+    assert executor_kwargs == [{"library": "build123d"}]
+    assert json.loads((result.run_dir / "config.json").read_text())["library"] == "build123d"
+    assert "build123d" in (result.run_dir / "report.md").read_text()
+
+
+async def test_default_library_keeps_the_executor_call_bare(tmp_path):
+    """The default path must not pass a library kwarg — doubles need not accept one."""
+    executor_kwargs: list[dict] = []
+
+    def recording_executor(code, out_dir, timeout_s=60, **kwargs):
+        executor_kwargs.append(kwargs)
+        return stub_executor(code, out_dir, timeout_s=timeout_s)
+
+    generator = scripted_generator([("tool", GOOD_V1), ("text", "built")], [])
+    critic = scripted_critic([critique_args(9, [])], [])
+    config = RunConfig(max_iterations=1, out_dir=tmp_path / "runs")
+
+    await generate_cad(
+        "a cube",
+        config,
+        generator_model=generator,
+        critic_model=critic,
+        executor=recording_executor,
+        renderer=stub_renderer,
+    )
+
+    assert executor_kwargs == [{}]

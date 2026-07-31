@@ -123,8 +123,8 @@ class TestBmwToggle:
 
     def test_toggle_off_keeps_default_models(self):
         cfg = RunConfig()
-        assert cfg.model == "openai:gpt-5-mini"
-        assert cfg.critic_model == "openai:gpt-5-mini"
+        assert cfg.model == "openai-responses:gpt-5.6-luna"
+        assert cfg.critic_model == "openai-responses:gpt-5.6-luna"
 
     def test_bmw_prefix_without_toggle(self, monkeypatch):
         monkeypatch.setenv("CAD_GEN_MODEL", "bmw:openai/gpt-4o")

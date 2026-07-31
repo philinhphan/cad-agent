@@ -6,8 +6,13 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-DEFAULT_MODEL = "openai:gpt-5-mini"  # generator
-DEFAULT_CRITIC_MODEL = "openai:gpt-5-mini"  # vision critic
+# NOTE the `openai-responses:` prefix (the Responses API), not plain `openai:` (which still
+# resolves to Chat Completions). gpt-5.6-luna rejects function tools on Chat Completions
+# with "Function tools with reasoning_effort are not supported ... use /v1/responses", and
+# EVERY agent here needs tools — the generator calls execute_cad_code, and the critic's
+# structured Critique output is itself tool-backed. Plain `openai:gpt-5.6-luna` 400s.
+DEFAULT_MODEL = "openai-responses:gpt-5.6-luna"  # generator
+DEFAULT_CRITIC_MODEL = "openai-responses:gpt-5.6-luna"  # vision critic
 # Used by every agent when the global BMW toggle (CAD_GEN_BMW) is set. See _coerce_model.
 BMW_DEFAULT_MODEL = "openai/gpt-5-mini"
 
@@ -15,6 +20,15 @@ BMW_DEFAULT_MODEL = "openai/gpt-5-mini"
 # ModelSettings field). `None` leaves the provider default untouched.
 ReasoningEffort = Literal["minimal", "low", "medium", "high", "xhigh"]
 REASONING_EFFORTS: tuple[ReasoningEffort, ...] = ("minimal", "low", "medium", "high", "xhigh")
+
+# Python CAD library the generator writes code in. Both are OpenCASCADE-backed and both
+# export STEP/STL, so everything downstream of the sandbox (rendering, reprojection,
+# metrics, the bench adapter) is unaffected by the choice. Only the prompts and the
+# sandbox harness differ — see agents/prompts.py and sandbox/executor.py.
+# build123d is an optional dependency: install it with `uv sync --extra build123d`.
+CadLibrary = Literal["cadquery", "build123d"]
+CAD_LIBRARIES: tuple[CadLibrary, ...] = ("cadquery", "build123d")
+DEFAULT_LIBRARY: CadLibrary = "cadquery"
 
 
 def _bmw_enabled() -> bool:
@@ -59,7 +73,7 @@ class GeometryMetrics(BaseModel):
 
 
 class ExecutionResult(BaseModel):
-    """Outcome of running generated CadQuery code in the sandbox subprocess."""
+    """Outcome of running generated CAD code in the sandbox subprocess."""
 
     success: bool
     code: str
@@ -251,6 +265,10 @@ class RunConfig(BaseModel):
         ),
         validate_default=True,
     )
+    # Python CAD library the generator writes code in, and therefore which sandbox harness
+    # executes it. Unlike the model fields this does NOT resolve from the environment: it is
+    # a per-run choice made explicitly via `cad-gen --library` or the web form.
+    library: CadLibrary = DEFAULT_LIBRARY
     max_iterations: int = 5
     score_threshold: int = 8
     exec_timeout_s: float = 60

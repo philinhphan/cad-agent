@@ -11,6 +11,7 @@ from cad_gen.agents.generator import (
     IterationWorkspace,
     build_generator_agent,
     format_describe,
+    format_selection,
     format_selector,
 )
 from cad_gen.models import (
@@ -360,3 +361,101 @@ def test_format_describe_summarizes_topology():
     out = format_describe(DESCRIBE_DATA)
     assert "solids 1, faces 6, edges 12" in out
     assert "PLANE x6" in out and "LINE x12" in out
+
+
+# --- CAD library selection -----------------------------------------------------------
+
+
+async def _agent_info(tmp_path, **kwargs) -> AgentInfo:
+    """Run the generator once and capture what it actually exposed to the model.
+
+    Asserting on AgentInfo rather than the Agent's private attributes keeps these tests
+    pinned to the tools and instructions the model really receives.
+    """
+    captured: dict[str, AgentInfo] = {}
+
+    def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        captured["info"] = info
+        return ModelResponse(parts=[TextPart("done")])
+
+    agent = build_generator_agent(FunctionModel(model_fn), **kwargs)
+    await agent.run("a 10mm cube", deps=IterationWorkspace(iter_dir=tmp_path))
+    return captured["info"]
+
+
+async def test_generator_registers_the_probe_tool_matching_the_library(tmp_path):
+    """The two libraries select geometry differently, so they get different probe tools.
+
+    Offering a CadQuery string-selector tool to a build123d model (or vice versa) invites
+    calls that can never succeed.
+    """
+    cq_tools = {t.name for t in (await _agent_info(tmp_path)).function_tools}
+    b3d_tools = {
+        t.name
+        for t in (await _agent_info(tmp_path, library="build123d")).function_tools
+    }
+
+    assert "check_selector" in cq_tools and "check_selection" not in cq_tools
+    assert "check_selection" in b3d_tools and "check_selector" not in b3d_tools
+    # Everything else is shared.
+    assert {"execute_cad_code", "inspect_geometry"} <= cq_tools
+    assert {"execute_cad_code", "inspect_geometry"} <= b3d_tools
+
+
+async def test_generator_instructions_follow_the_library(tmp_path):
+    cq = (await _agent_info(tmp_path)).instructions or ""
+    b3d = (await _agent_info(tmp_path, library="build123d")).instructions or ""
+
+    assert "CadQuery" in cq
+    assert "build123d" in b3d and "CadQuery" not in b3d
+
+
+def test_workspace_omits_library_kwarg_at_the_default(tmp_path):
+    """Executor doubles in this suite take no **kwargs, so the default call must be bare.
+
+    `seed_files` already relies on this; `library` must not regress it.
+    """
+    seen: list[dict] = []
+
+    def picky_executor(code, out_dir, timeout_s=60):
+        seen.append({"timeout_s": timeout_s})
+        return ExecutionResult(success=True, code=code, duration_s=0.01)
+
+    ws = IterationWorkspace(iter_dir=tmp_path, executor=picky_executor)
+    ws.execute("result = None")
+
+    assert seen == [{"timeout_s": 60}]
+
+
+def test_workspace_passes_library_when_not_default(tmp_path):
+    seen: list[dict] = []
+
+    def executor(code, out_dir, timeout_s=60, **kwargs):
+        seen.append(kwargs)
+        return ExecutionResult(success=True, code=code, duration_s=0.01)
+
+    ws = IterationWorkspace(iter_dir=tmp_path, executor=executor, library="build123d")
+    ws.execute("result = None")
+
+    assert seen == [{"library": "build123d"}]
+
+
+def test_format_selection_renders_matches_and_errors():
+    data = {
+        "expression": "result.edges().filter_by(Axis.Z)",
+        "count": 4,
+        "matches": [{"type": "LINE", "center": [0, 0, 0], "length": 10}],
+        "selection_error": None,
+    }
+    ok = format_selection(data)
+    assert "result.edges().filter_by(Axis.Z) matched 4 shape(s)" in ok
+
+    empty = format_selection({**data, "count": 0, "matches": []})
+    assert "EMPTY" in empty
+
+    # A well-formed expression returning a non-Shape did not raise — say so accurately.
+    bad = format_selection(
+        {**data, "count": 0, "selection_error": "expression produced float, ..."}
+    )
+    assert "not a usable selection" in bad
+    assert "RAISED" not in bad

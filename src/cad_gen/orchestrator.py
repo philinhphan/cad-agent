@@ -66,8 +66,8 @@ async def generate_cad(
 
     Editing mode: pass `base_step` (the bytes of a base CAD model). It is seeded as
     `base_step_name` into every sandbox execution/probe dir so generated code can load it
-    with ``cq.importers.importStep("input.step")``, and the generator + critic switch to
-    editing instructions. `reference_images` (renders of the base model) are attached to the
+    with ``cq.importers.importStep("input.step")`` (CadQuery) or ``import_step("input.step")``
+    (build123d), and the generator + critic switch to editing instructions. `reference_images` (renders of the base model) are attached to the
     generator and critic as before-state context. Editing has no drawing, so the whole
     drawing pipeline (interpretation/constraints/reprojection) stays dormant.
     """
@@ -109,11 +109,13 @@ async def generate_cad(
         generator_model or config.model,
         reasoning_effort=config.reasoning_effort,
         editing=is_editing,
+        library=config.library,
     )
     critic = build_critic_agent(
         critic_model or config.critic_model,
         reasoning_effort=config.critic_reasoning_effort,
         editing=is_editing,
+        library=config.library,
     )
 
     iterations: list[IterationRecord] = []
@@ -130,6 +132,7 @@ async def generate_cad(
             max_attempts=config.max_exec_attempts_per_iteration,
             executor=executor,
             seed_files=seed_files,
+            library=config.library,
         )
 
         prompt = _build_prompt(
@@ -197,6 +200,7 @@ async def generate_cad(
                 constraint_validation=record.constraint_validation,
                 reference_images=reference_images,
                 editing=is_editing,
+                library=config.library,
             )
 
         (iter_dir / "iteration.json").write_text(record.model_dump_json(indent=2))
@@ -615,7 +619,7 @@ def _write_report(result: RunResult, config: RunConfig) -> None:
         "",
         "## Final artifacts",
         "",
-        "- `final/model.py` — CadQuery source",
+        f"- `final/model.py` — {config.library} source",
         "- `final/model.stl`, `final/model.step` — geometry",
         "- `final/views.png` — rendered views (below)",
         "",

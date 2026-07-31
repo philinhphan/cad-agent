@@ -40,7 +40,7 @@ def run(
     parallel: int = typer.Option(
         3, "--parallel", "-j", min=1, help="Number of samples to generate concurrently."
     ),
-    model: str = typer.Option(None, "--model", "-m", help="Generator model (default openai:gpt-5-mini)."),
+    model: str = typer.Option(None, "--model", "-m", help="Generator model (default openai-responses:gpt-5.6-luna)."),
     critic_model: str = typer.Option(None, "--critic-model", help="Vision critic model."),
     max_iterations: int = typer.Option(
         5, "--max-iterations", "-n", min=1, help="Outer self-refine iteration budget per sample."

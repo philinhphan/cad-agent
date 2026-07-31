@@ -6,9 +6,11 @@ from pydantic_ai import Agent, BinaryContent
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
-from cad_gen.agents.prompts import CRITIC_INSTRUCTIONS, EDITING_CRITIC_INSTRUCTIONS
+from cad_gen.agents.prompts import critic_instructions
 from cad_gen.bmw import resolve_model
 from cad_gen.models import (
+    DEFAULT_LIBRARY,
+    CadLibrary,
     ConstraintValidation,
     Critique,
     DrawingAttachment,
@@ -18,20 +20,25 @@ from cad_gen.models import (
     ReprojectionReport,
 )
 
+# How the reviewed code is labelled in the critique prompt, per CAD library.
+_CODE_HEADING = {"cadquery": "CadQuery", "build123d": "build123d"}
+
 
 def build_critic_agent(
     model: str | Model,
     *,
     reasoning_effort: ReasoningEffort | None = None,
     editing: bool = False,
+    library: CadLibrary = DEFAULT_LIBRARY,
 ) -> Agent[None, Critique]:
     model = resolve_model(model)  # route `bmw:...` strings to the BMW gateway
     # `thinking` is pydantic-ai's provider-agnostic reasoning knob; for a Gemini critic it
     # enables thinking before judging. When unset we pass no model_settings so the
     # provider's own default is left untouched.
     model_settings = ModelSettings(thinking=reasoning_effort) if reasoning_effort else None
-    # Editing mode swaps in a rubric that compares before/after and penalizes no-ops.
-    instructions = EDITING_CRITIC_INSTRUCTIONS if editing else CRITIC_INSTRUCTIONS
+    # Editing mode swaps in a rubric that compares before/after and penalizes no-ops;
+    # `library` selects the CAD language the reviewed code is written in.
+    instructions = critic_instructions(library, editing=editing)
     return Agent(
         model,
         output_type=Critique,
@@ -64,6 +71,7 @@ async def run_critique(
     constraint_validation: ConstraintValidation | None = None,
     reference_images: list[DrawingAttachment] | None = None,
     editing: bool = False,
+    library: CadLibrary = DEFAULT_LIBRARY,
 ) -> Critique:
     metrics_json = (
         execution.metrics.model_dump_json(indent=2) if execution.metrics else "{}"
@@ -131,7 +139,8 @@ async def run_critique(
     prompt = (
         f"{spec_block}"
         f"## Measured geometry (ground truth)\n{metrics_json}\n\n"
-        f"## CadQuery code that produced it\n```python\n{execution.code}\n```\n\n"
+        f"## {_CODE_HEADING[library]} code that produced it\n"
+        f"```python\n{execution.code}\n```\n\n"
         f"{constraint_block}"
         f"{reproject_block}"
         f"{image_note}"

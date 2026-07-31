@@ -1,4 +1,4 @@
-"""Generator agent: writes CadQuery code and validates it via the sandbox tool."""
+"""Generator agent: writes CAD code and validates it via the sandbox tool."""
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -8,9 +8,15 @@ from pydantic_ai import Agent, RunContext
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
-from cad_gen.agents.prompts import EDITING_GENERATOR_INSTRUCTIONS, GENERATOR_INSTRUCTIONS
+from cad_gen.agents.prompts import generator_instructions
 from cad_gen.bmw import resolve_model
-from cad_gen.models import ExecutionResult, IntrospectionResult, ReasoningEffort
+from cad_gen.models import (
+    DEFAULT_LIBRARY,
+    CadLibrary,
+    ExecutionResult,
+    IntrospectionResult,
+    ReasoningEffort,
+)
 from cad_gen.sandbox.executor import introspect_cad_code, run_cad_code
 
 ExecutorFn = Callable[..., ExecutionResult]
@@ -39,25 +45,39 @@ class IterationWorkspace:
     # Files seeded into every execution/probe dir before the code runs (editing mode
     # drops the base model here, e.g. {"input.step": <bytes>}). Empty for generation.
     seed_files: dict[str, bytes] = field(default_factory=dict)
+    # CAD library the generated code is written in; selects the sandbox harness.
+    library: CadLibrary = DEFAULT_LIBRARY
 
     @property
     def last_success(self) -> ExecutionResult | None:
         return next((r for r in reversed(self.attempts) if r.success), None)
 
+    def _extra_kwargs(self) -> dict:
+        """Optional executor kwargs, omitted when they carry no information.
+
+        Both `seed_files` and `library` are passed ONLY when they differ from the default,
+        so the plain generation call keeps its original signature and executor/introspector
+        test-doubles that accept neither kwarg keep working.
+        """
+        extra: dict = {}
+        if self.seed_files:
+            extra["seed_files"] = self.seed_files
+        if self.library != DEFAULT_LIBRARY:
+            extra["library"] = self.library
+        return extra
+
     def execute(self, code: str) -> ExecutionResult:
         attempt_dir = self.iter_dir / f"attempt_{len(self.attempts) + 1:02d}"
-        # Pass seed_files only when set so the generation call signature is unchanged
-        # and executor test-doubles that don't accept the kwarg keep working.
-        extra = {"seed_files": self.seed_files} if self.seed_files else {}
-        result = self.executor(code, attempt_dir, timeout_s=self.timeout_s, **extra)
+        result = self.executor(
+            code, attempt_dir, timeout_s=self.timeout_s, **self._extra_kwargs()
+        )
         self.attempts.append(result)
         return result
 
     def introspect(self, code: str, query: dict) -> IntrospectionResult:
         probe_dir = self.iter_dir / f"inspect_{len(self.introspections) + 1:02d}"
-        extra = {"seed_files": self.seed_files} if self.seed_files else {}
         result = self.introspector(
-            code, query, probe_dir, timeout_s=self.inspect_timeout_s, **extra
+            code, query, probe_dir, timeout_s=self.inspect_timeout_s, **self._extra_kwargs()
         )
         self.introspections.append(result)
         return result
@@ -137,19 +157,54 @@ def format_selector(data: dict) -> str:
     return "\n".join(lines)
 
 
+def format_selection(data: dict) -> str:
+    """Render a build123d `selection` probe into a verdict the model can act on.
+
+    The build123d counterpart of :func:`format_selector`: there are no string selectors, so
+    the probe reports on an evaluated ShapeList expression instead of a `.faces(sel)` call.
+    """
+    expression, count = data["expression"], data["count"]
+    head = f"{expression or '(empty)'} matched {count} shape(s)"
+    if data.get("selection_error"):
+        # The error may be a raised exception OR a well-formed expression that produced
+        # something other than shapes, so state it plainly rather than claiming a raise.
+        return (
+            f"{expression or '(empty)'} is not a usable selection: "
+            f"{data['selection_error']}\n"
+            "Fix the expression — it must evaluate to a Shape or a ShapeList, e.g. end it "
+            "with .edges()/.faces() or an index. Do not apply a fillet/chamfer/offset with it."
+        )
+    if count == 0:
+        return (
+            f"{head}. This selection is EMPTY — fillet()/chamfer() on it would raise. "
+            "Choose a different expression."
+        )
+    sample = data.get("matches", [])
+    lines = [f"{head}:"]
+    lines += [f"  - {_fmt_entity(e)}" for e in sample[:_TEXT_SAMPLE]]
+    if count > _TEXT_SAMPLE:
+        lines.append(f"  ... and {count - _TEXT_SAMPLE} more")
+    lines.append(
+        "If this is exactly the set you intend to modify, apply the op; otherwise refine "
+        "the expression."
+    )
+    return "\n".join(lines)
+
+
 def build_generator_agent(
     model: str | Model,
     *,
     reasoning_effort: ReasoningEffort | None = None,
     editing: bool = False,
+    library: CadLibrary = DEFAULT_LIBRARY,
 ) -> Agent[IterationWorkspace, str]:
     model = resolve_model(model)  # route `bmw:...` strings to the BMW gateway
     # `thinking` is pydantic-ai's provider-agnostic reasoning-effort knob; when unset we
     # pass no model_settings so the provider's own default is left untouched.
     model_settings = ModelSettings(thinking=reasoning_effort) if reasoning_effort else None
     # Editing mode swaps in instructions that permit importing the seeded base model and
-    # frame the task as a minimal modification (see EDITING_GENERATOR_INSTRUCTIONS).
-    instructions = EDITING_GENERATOR_INSTRUCTIONS if editing else GENERATOR_INSTRUCTIONS
+    # frame the task as a minimal modification; `library` selects the CAD language taught.
+    instructions = generator_instructions(library, editing=editing)
     agent: Agent[IterationWorkspace, str] = Agent(
         model,
         deps_type=IterationWorkspace,
@@ -217,17 +272,39 @@ def build_generator_agent(
         err = _probe(ctx, code, {"mode": "describe"})
         return err if err is not None else format_describe(ctx.deps.introspections[-1].data)
 
-    @agent.tool
-    def check_selector(
-        ctx: RunContext[IterationWorkspace], code: str, target: str, selector: str
-    ) -> str:
-        """Read-only probe: build `code`, then report which `target` ('edges' or 'faces')
-        the CadQuery string `selector` matches, with their coordinates. Use this to VERIFY
-        a selector before .fillet()/.chamfer()/.shell()/edge-cut — an empty or malformed
-        selection crashes the real script. Does not consume the execute_cad_code budget.
-        """
-        query = {"mode": "selector", "target": target, "selector": selector}
-        err = _probe(ctx, code, query)
-        return err if err is not None else format_selector(ctx.deps.introspections[-1].data)
+    # The two libraries select geometry in fundamentally different ways — CadQuery with
+    # string selectors, build123d with ShapeList expressions — so each gets the probe tool
+    # that matches its API rather than a lowest-common-denominator one.
+    if library == "build123d":
+
+        @agent.tool
+        def check_selection(
+            ctx: RunContext[IterationWorkspace], code: str, expression: str
+        ) -> str:
+            """Read-only probe: build `code`, then evaluate a build123d ShapeList
+            `expression` against it (e.g. `result.edges().filter_by(Axis.Z)` or
+            `result.faces().sort_by(Axis.Z)[-1]`) and report what it matches, with
+            coordinates. Use this to VERIFY a selection before fillet()/chamfer()/offset()
+            or an edge/face-based cut — fillet() and chamfer() raise on an empty ShapeList.
+            Does not consume the execute_cad_code budget.
+            """
+            query = {"mode": "selection", "expression": expression}
+            err = _probe(ctx, code, query)
+            return err if err is not None else format_selection(ctx.deps.introspections[-1].data)
+
+    else:
+
+        @agent.tool
+        def check_selector(
+            ctx: RunContext[IterationWorkspace], code: str, target: str, selector: str
+        ) -> str:
+            """Read-only probe: build `code`, then report which `target` ('edges' or 'faces')
+            the CadQuery string `selector` matches, with their coordinates. Use this to VERIFY
+            a selector before .fillet()/.chamfer()/.shell()/edge-cut — an empty or malformed
+            selection crashes the real script. Does not consume the execute_cad_code budget.
+            """
+            query = {"mode": "selector", "target": target, "selector": selector}
+            err = _probe(ctx, code, query)
+            return err if err is not None else format_selector(ctx.deps.introspections[-1].data)
 
     return agent

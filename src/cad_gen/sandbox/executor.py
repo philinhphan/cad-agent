@@ -1,7 +1,11 @@
-"""Run generated CadQuery code in an isolated subprocess.
+"""Run generated CAD code in an isolated subprocess.
 
 Isolation here means crash/timeout/state isolation, not a security
 boundary — see README.
+
+Each supported CAD library gets its own harness pair rather than one harness that branches
+internally: a harness imports exactly one CAD library, so a single file would drag both
+kernels into every subprocess.
 """
 
 import json
@@ -10,12 +14,41 @@ import sys
 import time
 from pathlib import Path
 
-from cad_gen.models import ExecutionResult, GeometryMetrics, IntrospectionResult
+from cad_gen.models import (
+    DEFAULT_LIBRARY,
+    CadLibrary,
+    ExecutionResult,
+    GeometryMetrics,
+    IntrospectionResult,
+)
 
-HARNESS = Path(__file__).parent / "harness.py"
-INTROSPECT_HARNESS = Path(__file__).parent / "introspect.py"
+_SANDBOX_DIR = Path(__file__).parent
+
+# library -> (execute+export harness, read-only introspection harness). Both scripts in a
+# pair honour the same CLI contract, so nothing above this module varies by library.
+_HARNESSES: dict[CadLibrary, tuple[Path, Path]] = {
+    "cadquery": (_SANDBOX_DIR / "harness.py", _SANDBOX_DIR / "introspect.py"),
+    "build123d": (
+        _SANDBOX_DIR / "harness_build123d.py",
+        _SANDBOX_DIR / "introspect_build123d.py",
+    ),
+}
+
+# Kept for backwards compatibility with callers that referenced the CadQuery harness paths
+# directly before the library became selectable.
+HARNESS, INTROSPECT_HARNESS = _HARNESSES[DEFAULT_LIBRARY]
 
 _TRACEBACK_TAIL_CHARS = 3000
+
+
+def _harnesses(library: CadLibrary) -> tuple[Path, Path]:
+    """Return the (execution, introspection) harness pair for `library`."""
+    try:
+        return _HARNESSES[library]
+    except KeyError:
+        raise ValueError(
+            f"Unknown CAD library {library!r}; expected one of {sorted(_HARNESSES)}"
+        ) from None
 
 
 def run_cad_code(
@@ -24,13 +57,19 @@ def run_cad_code(
     timeout_s: float = 60,
     *,
     seed_files: dict[str, bytes] | None = None,
+    library: CadLibrary = DEFAULT_LIBRARY,
 ) -> ExecutionResult:
     """Execute `code` via the harness subprocess; artifacts land in `out_dir`.
 
+    `library` selects which harness runs the code, and therefore which CAD library `code`
+    is expected to be written in.
+
     `seed_files` (name -> bytes) are written into `out_dir` before the subprocess
     runs — the harness executes with cwd=out_dir, so editing code can load a seeded
-    base model with e.g. ``cq.importers.importStep("input.step")``.
+    base model with e.g. ``cq.importers.importStep("input.step")`` (CadQuery) or
+    ``import_step("input.step")`` (build123d).
     """
+    harness, _ = _harnesses(library)
     # Resolve before anything else: the subprocess runs with cwd=out_dir, so
     # relative paths in its argv would resolve against the wrong base.
     out_dir = Path(out_dir).resolve()
@@ -43,7 +82,7 @@ def run_cad_code(
     start = time.monotonic()
     try:
         proc = subprocess.run(
-            [sys.executable, str(HARNESS), str(code_file), str(out_dir)],
+            [sys.executable, str(harness), str(code_file), str(out_dir)],
             capture_output=True,
             text=True,
             timeout=timeout_s,
@@ -105,17 +144,22 @@ def introspect_cad_code(
     timeout_s: float = 30,
     *,
     seed_files: dict[str, bytes] | None = None,
+    library: CadLibrary = DEFAULT_LIBRARY,
 ) -> IntrospectionResult:
-    """Probe the geometry `code` builds WITHOUT exporting (see introspect.py).
+    """Probe the geometry `code` builds WITHOUT exporting (see introspect*.py).
 
-    `query` is {"mode": "describe"} or
-    {"mode": "selector", "target": "edges"|"faces", "selector": "<sel>"}.
+    `query` is {"mode": "describe"} for either library; the selection probe is
+    library-specific because the two select geometry differently:
+    {"mode": "selector", "target": "edges"|"faces", "selector": "<sel>"} for CadQuery,
+    {"mode": "selection", "expression": "<expr>"} for build123d.
+
     Returns ok=False with the traceback when the *code* fails to build; a bad
-    *selector* comes back ok=True with the diagnostic inside `data`.
+    *selector/expression* comes back ok=True with the diagnostic inside `data`.
 
     `seed_files` mirrors :func:`run_cad_code` — a probe over editing code must see
     the same seeded base model (e.g. ``input.step``) the real execution does.
     """
+    _, introspect_harness = _harnesses(library)
     out_dir = Path(out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     for name, data in (seed_files or {}).items():
@@ -127,7 +171,7 @@ def introspect_cad_code(
 
     try:
         proc = subprocess.run(
-            [sys.executable, str(INTROSPECT_HARNESS), str(code_file), str(query_file)],
+            [sys.executable, str(introspect_harness), str(code_file), str(query_file)],
             capture_output=True,
             text=True,
             timeout=timeout_s,

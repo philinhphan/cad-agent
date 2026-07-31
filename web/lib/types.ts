@@ -46,9 +46,13 @@ export interface IterationPayload {
   urls: ArtifactUrls;
 }
 
+// CAD library the generator writes code in. Mirrors CadLibrary in src/cad_gen/models.py.
+export type CadLibrary = "cadquery" | "build123d";
+
 export interface RunConfig {
   model: string;
   critic_model: string | null;
+  library: CadLibrary;
   max_iterations: number;
   score_threshold: number;
   exec_timeout_s: number;
@@ -127,6 +131,7 @@ export interface ShowcaseResponse {
 export interface RunConfigInput {
   model?: string;
   critic_model?: string | null;
+  library?: CadLibrary;
   max_iterations?: number;
   score_threshold?: number;
   exec_timeout_s?: number;

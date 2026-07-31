@@ -143,9 +143,9 @@ class TestRunConfig:
 
     def test_defaults(self):
         cfg = RunConfig()
-        assert cfg.model == "openai:gpt-5-mini"
-        assert cfg.critic_model == "openai:gpt-5-mini"
-        assert cfg.view_model == "openai:gpt-5-mini"
+        assert cfg.model == "openai-responses:gpt-5.6-luna"
+        assert cfg.critic_model == "openai-responses:gpt-5.6-luna"
+        assert cfg.view_model == "openai-responses:gpt-5.6-luna"
         assert cfg.max_iterations == 5
         assert cfg.score_threshold == 8
         assert cfg.exec_timeout_s == 60
@@ -157,6 +157,22 @@ class TestRunConfig:
         assert cfg.reproject_orientation_coverage == 0.55
         assert cfg.reasoning_effort is None
         assert cfg.critic_reasoning_effort is None
+        assert cfg.library == "cadquery"
+
+    def test_library_can_be_set(self):
+        assert RunConfig(library="build123d").library == "build123d"
+
+    def test_unknown_library_rejected(self):
+        with pytest.raises(ValidationError):
+            RunConfig(library="openscad")
+
+    def test_library_does_not_resolve_from_env(self, monkeypatch):
+        """Deliberately NOT env-driven: it is a per-run choice, unlike the model fields.
+
+        Guards against someone adding a default_factory by copy-pasting the model fields.
+        """
+        monkeypatch.setenv("CAD_GEN_LIBRARY", "build123d")
+        assert RunConfig().library == "cadquery"
 
     def test_reasoning_effort_resolves_from_env(self, monkeypatch):
         monkeypatch.setenv("CAD_GEN_REASONING_EFFORT", "high")
@@ -189,7 +205,7 @@ class TestRunConfig:
     def test_critic_model_defaults_independently_of_generator(self):
         # The critic has its own default (vision model) — it does NOT inherit --model.
         cfg = RunConfig(model="anthropic:claude-x")
-        assert cfg.critic_model == "openai:gpt-5-mini"
+        assert cfg.critic_model == "openai-responses:gpt-5.6-luna"
 
     def test_critic_model_override_wins(self):
         cfg = RunConfig(model="anthropic:claude-x", critic_model="google:gemini-3.5-pro")

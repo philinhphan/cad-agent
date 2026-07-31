@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion } from "motion/react";
 import { getConfigDefaults, interpretDrawing, startRun } from "@/lib/api";
-import type { RunConfigInput } from "@/lib/types";
+import type { CadLibrary, RunConfigInput } from "@/lib/types";
 
 const EXAMPLES = [
   "a 40mm cube with a 10mm diameter centered through-hole",
@@ -18,10 +18,18 @@ const EXAMPLES = [
 const DEFAULTS = {
   model: "",
   critic_model: "",
+  // Unlike the model fields this has no env-resolved backend default to wait for —
+  // it mirrors DEFAULT_LIBRARY in src/cad_gen/models.py.
+  library: "cadquery" as CadLibrary,
   max_iterations: 5,
   score_threshold: 8,
   exec_timeout_s: 60,
 };
+
+const LIBRARY_OPTIONS: { value: CadLibrary; label: string }[] = [
+  { value: "cadquery", label: "CadQuery" },
+  { value: "build123d", label: "build123d" },
+];
 
 const CRITIC_FALLBACK = "google:gemini-3.5-flash";
 
@@ -68,6 +76,7 @@ export function SpecForm() {
       // empty model -> omit so the server's env-resolved default applies
       model: cfg.model.trim() || undefined,
       critic_model: cfg.critic_model.trim() || null,
+      library: cfg.library,
       max_iterations: cfg.max_iterations,
       score_threshold: cfg.score_threshold,
       exec_timeout_s: cfg.exec_timeout_s,
@@ -274,6 +283,12 @@ export function SpecForm() {
             max={600}
             onChange={(v) => setCfg({ ...cfg, exec_timeout_s: v })}
           />
+          <SelectField
+            label="cad library"
+            value={cfg.library}
+            options={LIBRARY_OPTIONS}
+            onChange={(v) => setCfg({ ...cfg, library: v })}
+          />
         </div>
       )}
 
@@ -413,6 +428,35 @@ function NumberField({
         onChange={(e) => onChange(Number(e.target.value))}
         className="mt-2 w-full rounded-[var(--radius-tech)] border border-line bg-[#0c1016] px-3 py-2 text-ink outline-none focus:border-accent/60"
       />
+    </div>
+  );
+}
+
+function SelectField<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: { value: T; label: string }[];
+  onChange: (v: T) => void;
+}) {
+  return (
+    <div>
+      <label className="tech-label">{label}</label>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value as T)}
+        className="mt-2 w-full rounded-[var(--radius-tech)] border border-line bg-[#0c1016] px-3 py-2 text-[0.85rem] text-ink outline-none focus:border-accent/60"
+      >
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }

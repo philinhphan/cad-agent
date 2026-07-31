@@ -51,8 +51,8 @@ def test_config_defaults_falls_back_to_builtins(monkeypatch):
     body = client.get("/api/config/defaults").json()
 
     assert body == {
-        "model": "openai:gpt-5-mini",
-        "critic_model": "openai:gpt-5-mini",
+        "model": "openai-responses:gpt-5.6-luna",
+        "critic_model": "openai-responses:gpt-5.6-luna",
     }
 
 

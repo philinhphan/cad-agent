@@ -1,11 +1,13 @@
 """Command-line interface: `cad-gen "<spec>" [options]`."""
 
 import asyncio
+import importlib.util
 import os
 import shlex
 import subprocess
 import sys
 import tempfile
+from enum import Enum
 from pathlib import Path
 
 import typer
@@ -15,11 +17,22 @@ from rich.console import Console
 from cad_gen.agents.drawing_parser import build_drawing_parser_agent, interpret_drawing
 from cad_gen.bmw import require_bmw_credentials
 from cad_gen.imaging import media_type_for
-from cad_gen.models import DrawingAttachment, IterationRecord, RunConfig
+from cad_gen.models import DEFAULT_LIBRARY, DrawingAttachment, IterationRecord, RunConfig
 from cad_gen.orchestrator import generate_cad
 
 app = typer.Typer(add_completion=False)
 console = Console()
+
+
+class Library(str, Enum):
+    """CAD library choices, as an enum so typer renders them in `--help`.
+
+    A `str` enum keeps the member interchangeable with the plain string that
+    `RunConfig.library` (a Literal) expects.
+    """
+
+    cadquery = "cadquery"
+    build123d = "build123d"
 
 
 @app.command()
@@ -48,10 +61,16 @@ def generate(
         8, "--threshold", "-t", min=0, max=10, help="Critic score needed to accept."
     ),
     model: str = typer.Option(
-        None, "--model", "-m", help="Generator model (default openai:gpt-5-mini)."
+        None, "--model", "-m", help="Generator model (default openai-responses:gpt-5.6-luna)."
     ),
     critic_model: str = typer.Option(
-        None, "--critic-model", help="Vision critic model (default openai:gpt-5-mini)."
+        None, "--critic-model", help="Vision critic model (default openai-responses:gpt-5.6-luna)."
+    ),
+    library: Library = typer.Option(
+        DEFAULT_LIBRARY,
+        "--library",
+        "-l",
+        help="CAD library the generator writes code in (build123d needs the extra).",
     ),
     timeout: float = typer.Option(
         60.0, "--timeout", help="Sandbox execution timeout per attempt (seconds)."
@@ -77,6 +96,9 @@ def generate(
         score_threshold=threshold,
         exec_timeout_s=timeout,
         out_dir=out,
+        # `library` always has a value (typer supplies the default), and unlike the model
+        # fields it has no environment fallback to preserve, so it is set unconditionally.
+        library=library.value,
     )
     if model:
         config_kwargs["model"] = model
@@ -85,8 +107,12 @@ def generate(
     config = RunConfig(**config_kwargs)
 
     _require_api_key(config)
+    _require_cad_library(config)
 
-    console.print(f"[bold]cad-gen[/bold]  model={config.model}  critic={config.critic_model}")
+    console.print(
+        f"[bold]cad-gen[/bold]  model={config.model}  critic={config.critic_model}  "
+        f"library={config.library}"
+    )
     console.print(f"spec: [italic]{spec or '(from drawing)'}[/italic]")
     if drawings:
         console.print(f"drawings: [italic]{', '.join(d.filename for d in drawings)}[/italic]")
@@ -176,8 +202,13 @@ def _edit_text(text: str) -> str:
 
 
 # provider prefix -> env var(s) that satisfy it (any one suffices).
+# `openai-responses` / `openai-chat` select the API surface, not a different provider, so
+# they need the same key. They are listed explicitly because the lookup is by exact prefix:
+# without them the default model would skip the key check and fail later at request time.
 _PROVIDER_KEYS = {
     "openai": ("OPENAI_API_KEY",),
+    "openai-responses": ("OPENAI_API_KEY",),
+    "openai-chat": ("OPENAI_API_KEY",),
     "google": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
     "google-gla": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
     "google-vertex": ("GOOGLE_API_KEY",),
@@ -210,6 +241,29 @@ def _require_api_key(config: RunConfig) -> None:
             )
         console.print("Add it to a .env file (see .env.example) or export it.")
         raise typer.Exit(2)
+
+
+# CAD library -> the pip extra that provides it. `cadquery` is a core dependency and so is
+# always importable; only the optional ones need checking.
+_LIBRARY_EXTRAS = {"build123d": "build123d"}
+
+
+def _require_cad_library(config: RunConfig) -> None:
+    """Fail fast when the selected CAD library is not installed.
+
+    The sandbox runs the harness under `sys.executable`, so an import check here predicts
+    the subprocess exactly. Without it a missing library surfaces as an opaque ImportError
+    traceback inside every execution attempt of every iteration.
+    """
+    extra = _LIBRARY_EXTRAS.get(config.library)
+    if extra is None or importlib.util.find_spec(config.library) is not None:
+        return
+    console.print(
+        f"[red bold]{config.library} is not installed[/red bold] — required by "
+        f"--library {config.library}."
+    )
+    console.print(f"Install it with: uv sync --extra {extra}")
+    raise typer.Exit(2)
 
 
 def _print_iteration(record: IterationRecord) -> None:

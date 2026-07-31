@@ -1,7 +1,7 @@
 [project]
 name = "cad-gen"
 version = "0.1.0"
-description = "Agentic text-to-CAD: generates CadQuery geometry from natural language via a self-refine loop with visual critique"
+description = "Agentic text-to-CAD: generates CadQuery or build123d geometry from natural language via a self-refine loop with visual critique"
 readme = "README.md"
 authors = [
     { name = "Phi Linh", email = "philinh@gmail.com" }
@@ -24,6 +24,22 @@ cad-gen = "cad_gen.cli:app"
 cad-gen-bench = "cad_gen.bench.cli:app"
 
 [project.optional-dependencies]
+# Alternative geometry kernel, selected per run with `cad-gen --library build123d`.
+# Pinned <0.10 deliberately: 0.9.x requires cadquery-ocp>=7.8,<7.9, which is exactly the
+# 7.8.1.1 already locked for cadquery, so it installs without touching the CadQuery path.
+# 0.10+ switches to cadquery-ocp-novtk>=7.9, which would force cadquery 2.7 -> 2.8 and move
+# OCCT 7.8 -> 7.9 underneath reproject/check.py's raw OCP imports. Do not relax this bound
+# without re-locking and re-running the CadQuery end-to-end checks.
+build123d = [
+    "build123d>=0.9,<0.10",
+    # Transitive pin, not a direct import. build123d 0.9.1 declares an open `py-lib3mf>=2.3.1`,
+    # which was correct when it shipped: 2.3.1 is a universal py3-none-any wheel. From 2.4.1 on,
+    # py-lib3mf publishes manylinux aarch64 wheels ONLY, so the open range now resolves to a
+    # distribution that cannot install on macOS or x86 Linux. Upstream fixed this in build123d
+    # 0.11 by splitting the requirement on a platform marker; we backport the same marker and
+    # hold the universal wheel everywhere except the one platform 2.4.1+ actually targets.
+    "py-lib3mf==2.3.1; sys_platform != 'linux' or platform_machine != 'aarch64'",
+]
 bench = [
     "huggingface-hub>=0.28",  # snapshot_download the CADGenBench inputs dataset
     "pyyaml>=6.0",  # parse each sample's description.yaml

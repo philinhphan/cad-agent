@@ -64,8 +64,8 @@ drawing (+ optional text) ─► ORCHESTRATOR (outer loop: quality)
 | Area | Tool | Role |
 |---|---|---|
 | **Agent framework** | [PydanticAI](https://ai.pydantic.dev/) (`pydantic-ai-slim[google,openai]`) | Provider-agnostic LLM agents (generator, critic, drawing interpreter, view locator) with typed tool calling and structured outputs |
-| **LLM provider (default)** | [OpenAI](https://platform.openai.com/) (`openai:gpt-5-mini`) | Generator, vision critic, and drawing view-locator. Swappable per-agent to any PydanticAI provider (e.g. `google:`, `anthropic:`) |
-| **CAD kernel** | [CadQuery](https://cadquery.readthedocs.io/) + [OpenCASCADE / OCP](https://github.com/CadQuery/OCP) | Build solids from generated Python; export STEP, compute ground-truth metrics (volume, bbox, COM, face/solid count, watertightness) |
+| **LLM provider (default)** | [OpenAI](https://platform.openai.com/) (`openai-responses:gpt-5.6-luna`) | Generator, vision critic, and drawing view-locator. Swappable per-agent to any PydanticAI provider (e.g. `google:`, `anthropic:`) |
+| **CAD kernel** | [CadQuery](https://cadquery.readthedocs.io/) (default) or [build123d](https://build123d.readthedocs.io/) — both on [OpenCASCADE / OCP](https://github.com/CadQuery/OCP) | Build solids from generated Python; export STEP, compute ground-truth metrics (volume, bbox, COM, face/solid count, watertightness). Pick per run with `--library` |
 | **Mesh / geometry** | [trimesh](https://trimesh.org/) | STL export and mesh handling |
 | **Rendering** | [NumPy](https://numpy.org/) z-buffer renderer | Headless 4-view composite PNG (iso/front/top/right) — no GPU/OSMesa required |
 | **Computer vision** | [OpenCV](https://opencv.org/) (`opencv-python-headless`) | Drawing line masks, primitive extraction, distance transforms, reprojection overlays |
@@ -163,17 +163,49 @@ drawing; `--drawing` (repeatable for multi-sheet) is the authoritative input.
 |---|---|---|
 | `--max-iterations, -n` | 5 | outer self-refine iteration budget |
 | `--threshold, -t` | 8 | critic score (0–10) required to accept |
-| `--model, -m` | `openai:gpt-5-mini` | generator model (`provider:name`) |
-| `--critic-model` | `openai:gpt-5-mini` | vision critic model |
+| `--model, -m` | `openai-responses:gpt-5.6-luna` | generator model (`provider:name`) |
+| `--critic-model` | `openai-responses:gpt-5.6-luna` | vision critic model |
+| `--library, -l` | `cadquery` | CAD library the generator writes (`cadquery` \| `build123d`) |
 | `--drawing` | – | path to a technical drawing (repeatable for multi-sheet) |
 | `--timeout` | 60 | sandbox seconds per execution attempt |
 | `--out, -o` | `runs/` | artifacts directory |
 
 `CAD_GEN_MODEL` / `CAD_GEN_CRITIC_MODEL` / `CAD_GEN_VIEW_MODEL` env vars (or `.env`) set
-the same defaults; the CLI flags override them.
+the same defaults; the CLI flags override them. `--library` has no env var — it is a
+per-run choice.
 
 **Exit codes:** `0` accepted · `1` budget exhausted (best effort still written) ·
 `2` configuration error.
+
+### Choosing a CAD library
+
+The generator writes either **CadQuery** (default) or **build123d**. Both are Python BREP
+frameworks on the same OpenCASCADE kernel and both emit STEP + STL, so everything
+downstream — rendering, the reprojection check, metrics, the benchmark adapter — is
+identical either way. What changes is the code the LLM writes, the cheat sheet it is given,
+and the geometry-probe tool it gets:
+
+| | CadQuery | build123d |
+|---|---|---|
+| style | method chaining on `cq.Workplane` | `with BuildPart()` builder blocks |
+| selection | string selectors (`.faces(">Z")`) | `ShapeList` methods (`.faces().sort_by(Axis.Z)[-1]`) |
+| probe tool | `check_selector(code, target, selector)` | `check_selection(code, expression)` |
+| install | core dependency | `uv sync --extra build123d` |
+
+```bash
+uv sync --extra build123d          # one-time
+cad-gen "a 40x30x10mm plate with a 6mm centred hole" --library build123d
+```
+
+Selecting `build123d` without installing the extra fails immediately with an install hint
+rather than erroring inside the sandbox. The library is also selectable in the web
+dashboard under **model & sandbox**, and is recorded in each run's `config.json`.
+
+> **Note on pinning:** the extra pins `build123d>=0.9,<0.10`, which shares the
+> `cadquery-ocp` 7.8.x already locked for CadQuery — so installing it leaves the CadQuery
+> path untouched. build123d ≥0.10 moves to `cadquery-ocp-novtk` ≥7.9 and would upgrade the
+> kernel underneath CadQuery and `reproject/check.py`. See the comment in `pyproject.toml`
+> before relaxing either bound.
 
 ---
 
@@ -181,7 +213,7 @@ the same defaults; the CLI flags override them.
 
 A Next.js dashboard drives the loop from the browser: type a spec (or drop a drawing),
 watch each iteration stream in live over SSE, **orbit the real generated geometry in 3D**,
-inspect the CadQuery code and critique, and browse run history. It talks to a thin FastAPI
+inspect the generated code and critique, and browse run history. It talks to a thin FastAPI
 service that wraps `generate_cad`.
 
 Run both processes locally (needs `OPENAI_API_KEY` in `.env`):
@@ -257,8 +289,8 @@ annotated source of truth. Summary:
 |---|---|---|
 | `OPENAI_API_KEY` | – | **required** — generator, critic, view-locator |
 | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) / `ANTHROPIC_API_KEY` | – | only if you point an agent at that provider |
-| `CAD_GEN_MODEL` | `openai:gpt-5-mini` | generator model |
-| `CAD_GEN_CRITIC_MODEL` | `openai:gpt-5-mini` | vision critic model |
+| `CAD_GEN_MODEL` | `openai-responses:gpt-5.6-luna` | generator model |
+| `CAD_GEN_CRITIC_MODEL` | `openai-responses:gpt-5.6-luna` | vision critic model |
 | `CAD_GEN_VIEW_MODEL` | (critic default) | drawing view-locator (vision) |
 | `CAD_GEN_REASONING_EFFORT` | provider default | generator thinking effort (`minimal…xhigh`) |
 | `CAD_GEN_CRITIC_REASONING_EFFORT` | provider default | critic thinking effort |
