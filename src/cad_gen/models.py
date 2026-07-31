@@ -214,6 +214,23 @@ class ReprojectionReport(BaseModel):
     skipped_reason: str | None = None  # why evaluated=False (logging/debug only)
 
 
+class EditDelta(BaseModel):
+    """Deterministic comparison of an edited model against the base it was derived from.
+
+    Editing mode only. CADGenBench renormalizes an editing sample's shape score against
+    the unmodified input, so returning the base untouched ("no-op") scores 0 on shape and
+    caps the sample at 0.4 — it is never worth submitting. The vision critic cannot
+    reliably see a small or internal edit in a shaded render, so this measured signal
+    backstops it: see `is_noop`, which hard-fails the iteration in the orchestrator.
+    """
+
+    is_noop: bool
+    base_volume_mm3: float
+    candidate_volume_mm3: float
+    volume_change_pct: float
+    digest: str = ""  # LLM-facing text block (see step_metrics.describe_edit_delta)
+
+
 class IterationRecord(BaseModel):
     """Everything produced by one outer self-refine iteration."""
 
@@ -223,6 +240,7 @@ class IterationRecord(BaseModel):
     critique: Critique | None = None
     reprojection: ReprojectionReport | None = None
     constraint_validation: ConstraintValidation | None = None
+    edit_delta: EditDelta | None = None
     summary: str = ""
 
     @property

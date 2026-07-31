@@ -18,8 +18,8 @@ from rich.table import Table
 from cad_gen.bench.adapter import SampleOutcome, ensure_all_sample_dirs, run_all
 from cad_gen.bench.dataset import load_samples, resolve_inputs_dir
 from cad_gen.bench.submission import SubmissionMeta, write_submission_zip
-from cad_gen.cli import _require_api_key
-from cad_gen.models import RunConfig
+from cad_gen.cli import Library, _require_api_key, _require_cad_library
+from cad_gen.models import DEFAULT_LIBRARY, RunConfig
 
 app = typer.Typer(add_completion=False, help="Run cad-gen against CADGenBench and package submissions.")
 console = Console()
@@ -42,6 +42,12 @@ def run(
     ),
     model: str = typer.Option(None, "--model", "-m", help="Generator model (default openai-responses:gpt-5.6-luna)."),
     critic_model: str = typer.Option(None, "--critic-model", help="Vision critic model."),
+    library: Library = typer.Option(
+        DEFAULT_LIBRARY,
+        "--library",
+        "-l",
+        help="CAD library the generator writes code in (build123d needs the extra).",
+    ),
     max_iterations: int = typer.Option(
         5, "--max-iterations", "-n", min=1, help="Outer self-refine iteration budget per sample."
     ),
@@ -69,7 +75,10 @@ def run(
         raise typer.Exit(2)
 
     config_kwargs: dict = dict(
-        max_iterations=max_iterations, score_threshold=threshold, reproject=not no_reproject
+        max_iterations=max_iterations,
+        score_threshold=threshold,
+        reproject=not no_reproject,
+        library=library.value,
     )
     if model:
         config_kwargs["model"] = model
@@ -77,6 +86,7 @@ def run(
         config_kwargs["critic_model"] = critic_model
     config = RunConfig(**config_kwargs)
     _require_api_key(config)
+    _require_cad_library(config)
 
     console.print("[bold]cad-gen-bench[/bold]  fetching CADGenBench inputs from the Hub…")
     inputs_dir = resolve_inputs_dir(data_repo)
@@ -92,7 +102,7 @@ def run(
 
     n_pending = sum(1 for s in all_samples if not (out / s.name / "output.step").exists())
     console.print(
-        f"model={config.model}  critic={config.critic_model}  "
+        f"model={config.model}  critic={config.critic_model}  library={config.library}  "
         f"samples={len(all_samples)} ({n_pending} to run, {len(all_samples) - n_pending} already done)  "
         f"parallel={parallel}  out={out}\n"
     )

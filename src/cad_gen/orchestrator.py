@@ -20,7 +20,15 @@ from cad_gen.agents.generator import (
 )
 from cad_gen.drawing_constraints import derive_drawing_constraints, validate_drawing_constraints
 from cad_gen.imaging import drawing_filename
-from cad_gen.models import DrawingAttachment, DrawingConstraints, IterationRecord, RunConfig, RunResult
+from cad_gen.models import (
+    Critique,
+    DrawingAttachment,
+    DrawingConstraints,
+    EditDelta,
+    IterationRecord,
+    RunConfig,
+    RunResult,
+)
 from cad_gen.rendering.renderer import render_views
 from cad_gen.reproject import (
     ReprojectorFn,
@@ -34,6 +42,7 @@ from cad_gen.reproject.drawing_primitives import (
     primitive_prompt_summary,
 )
 from cad_gen.sandbox.executor import run_cad_code
+from cad_gen.step_metrics import StepMeasurement, describe_edit_delta, is_noop_edit, measure_step
 
 RendererFn = Callable[..., Path]
 IterationCallback = Callable[[IterationRecord], None]
@@ -118,6 +127,15 @@ async def generate_cad(
         library=config.library,
     )
 
+    # Editing only: measure the base model ONCE so every iteration can be compared against
+    # it. Read via raw OCP so the numbers are independent of the CAD library in use.
+    base_measurement = None
+    if base_step is not None:
+        try:
+            base_measurement = measure_step(run_dir / "input" / base_step_name)
+        except Exception:  # noqa: BLE001 — the guard is a safety net, never a hard failure
+            base_measurement = None
+
     iterations: list[IterationRecord] = []
     feedback: str | None = None
     composite_bytes: bytes | None = None  # champion's reprojection overlay for the next prompt
@@ -189,6 +207,12 @@ async def generate_cad(
                 record.reprojection = combine_reprojection_reports(
                     reports, iter_dir / "reproject"
                 )
+            # Deterministic before/after check (editing mode only), computed BEFORE the
+            # critic so its digest can ground the critique — the same pattern as the
+            # reprojection check in generation mode.
+            if base_measurement is not None and execution.step_path is not None:
+                record.edit_delta = _build_edit_delta(base_measurement, execution.step_path)
+
             record.critique = await run_critique(
                 critic,
                 spec=spec,
@@ -201,7 +225,14 @@ async def generate_cad(
                 reference_images=reference_images,
                 editing=is_editing,
                 library=config.library,
+                edit_delta=record.edit_delta,
             )
+            # A no-op cannot be accepted, whatever the critic thought it saw. Returning the
+            # base model untouched scores 0 on the benchmark's renormalized shape axis, so
+            # letting one through would end the loop on a worthless candidate. Overriding
+            # here (rather than trusting the rubric) makes that structural.
+            if record.edit_delta is not None and record.edit_delta.is_noop:
+                record.critique = _force_noop_critique(record.critique)
 
         (iter_dir / "iteration.json").write_text(record.model_dump_json(indent=2))
         iterations.append(record)
@@ -230,6 +261,47 @@ async def generate_cad(
     _write_report(result, config)
     (run_dir / "run_result.json").write_text(result.model_dump_json(indent=2))
     return result
+
+
+_NOOP_ISSUE = (
+    "NO-OP: the produced geometry is measurably identical to the base model "
+    "(`input.step`) — the requested edit was not applied at all. This is the single "
+    "worst outcome for an editing task and scores 0. Locate the feature the instruction "
+    "names with inspect_geometry, then actually modify it."
+)
+
+
+def _build_edit_delta(base: StepMeasurement, step_path: Path) -> EditDelta | None:
+    """Measure the candidate against the base model; None if it cannot be read."""
+    try:
+        candidate = measure_step(step_path)
+    except Exception:  # noqa: BLE001 — advisory guard; never break the loop over it
+        return None
+    denom = max(abs(base.volume_mm3), 1e-9)
+    return EditDelta(
+        is_noop=is_noop_edit(base, candidate),
+        base_volume_mm3=base.volume_mm3,
+        candidate_volume_mm3=candidate.volume_mm3,
+        volume_change_pct=(candidate.volume_mm3 - base.volume_mm3) / denom * 100.0,
+        digest=describe_edit_delta(base, candidate),
+    )
+
+
+def _force_noop_critique(critique: Critique | None) -> Critique:
+    """Rewrite a critique so a measured no-op can never clear the accept threshold."""
+    if critique is None:
+        return Critique(
+            matches_spec=False, score=0, issues=[_NOOP_ISSUE], suggestions=[],
+            summary="No-op: the model was returned unchanged.",
+        )
+    return critique.model_copy(
+        update={
+            "score": 0,
+            "matches_spec": False,
+            "issues": [_NOOP_ISSUE, *critique.issues],
+            "summary": f"No-op: the model was returned unchanged. {critique.summary}",
+        }
+    )
 
 
 def _new_run_dir(out_dir: Path) -> Path:

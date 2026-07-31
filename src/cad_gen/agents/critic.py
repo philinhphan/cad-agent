@@ -15,6 +15,7 @@ from cad_gen.models import (
     Critique,
     DrawingAttachment,
     DrawingConstraints,
+    EditDelta,
     ExecutionResult,
     ReasoningEffort,
     ReprojectionReport,
@@ -72,6 +73,7 @@ async def run_critique(
     reference_images: list[DrawingAttachment] | None = None,
     editing: bool = False,
     library: CadLibrary = DEFAULT_LIBRARY,
+    edit_delta: EditDelta | None = None,
 ) -> Critique:
     metrics_json = (
         execution.metrics.model_dump_json(indent=2) if execution.metrics else "{}"
@@ -125,6 +127,15 @@ async def run_critique(
             f"This check {verdict}.\n"
             f"{reprojection.digest}\n\n"
         )
+    # Measured before/after comparison for editing samples. Stated as ground truth (like
+    # the reprojection digest) because a small or internal edit is invisible in a render —
+    # eyeballing the two image sets is exactly how a no-op slips through.
+    edit_block = ""
+    if edit_delta is not None:
+        edit_block = (
+            "## Measured change against the base model (deterministic)\n"
+            f"{edit_delta.digest}\n\n"
+        )
     constraint_block = ""
     if constraints is not None:
         constraint_block += (
@@ -141,6 +152,7 @@ async def run_critique(
         f"## Measured geometry (ground truth)\n{metrics_json}\n\n"
         f"## {_CODE_HEADING[library]} code that produced it\n"
         f"```python\n{execution.code}\n```\n\n"
+        f"{edit_block}"
         f"{constraint_block}"
         f"{reproject_block}"
         f"{image_note}"
