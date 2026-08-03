@@ -13,7 +13,7 @@ Author: Phi Linh, AI Software Engineer · ~8,800 lines of Python across 39 modul
 ## Contents
 
 1. [Summary](#1-summary)
-2. [The GEARS framework](#2-the-gears-framework)
+2. [The GEARS framework and its design space](#2-the-gears-framework-and-its-design-space)
 3. [Architecture](#3-architecture)
 4. [Demonstrations](#4-demonstrations)
 5. [What the numbers say](#5-what-the-numbers-say)
@@ -61,7 +61,7 @@ which the mass follows directly.
 
 ---
 
-## 2. The GEARS framework
+## 2. The GEARS framework and its design space
 
 ![The GEARS loop](assets/gears-loop.svg)
 
@@ -90,6 +90,92 @@ guaranteed critique every iteration, enforceable budgets, and a suite that runs 
   out, a validity check that crashes, a VLM that fails to locate views — each withholds its signal
   rather than penalising the candidate. A flaky native call must not cost a good iteration its
   champion slot.
+
+### The design space GEARS sits in
+
+GEARS names *what the loop does*. It does not say what the alternatives were. Every generate–
+evaluate–refine system makes the same eleven choices, and naming them turns cad-gen's architecture
+from a set of decisions-that-happened-to-be-made into a position in a space with known neighbours.
+
+The dimensions below come from a design study of agentic refinement loops. **ADI** appears as a
+second point in that space — a deliberation system with a critic panel and an adjudicator, working
+where errors are *not* localizable and a human is available. It is included only for contrast; its
+details are not this report's subject. cad-gen sits at **R2** on that study's regime scale: errors
+are localizable, artifacts are diffable, and evaluation is expensive relative to generation.
+
+| # | Dimension | The space of options | cad-gen (R2) | Contrast — ADI (R0) |
+|---|---|---|---|---|
+| **D1** | Machine feedback source | none · intrinsic self-critique · cross-model critique · execution/compilation · simulation/render · deterministic domain arbiter · learned verifier · retrieval-grounded | execution + render + **deterministic reprojection arbiter** + VLM critique | cross-model critique panel; retrieval/web tools |
+| **D2** | Critic multiplicity & diversity | single · panel of *k*; diversity by sampling · persona · rubric split · model family · **evidence/modality split** · fine-tune | single VLM critic + deterministic arbiter — an implicit 2-critic setup split by evidence channel | *k* critics, persona + weights, user-editable |
+| **D3** | Feedback content | scalar · rubric scores · ranking · verdict/gate · NL critique · localized issues · actionable suggestions · counterexamples · evidence artifacts · diffs | score + structured issues/suggestions + overlay + measured metrics + regression diff | scores + reasoning + new-option proposals + clarifying questions |
+| **D4** | Aggregation | none · mean/median · trimmed · confidence-weighted · vote · **veto / lexicographic gate** · debate→consensus · meta-adjudicator · learned | **veto and soft-cap**: the arbiter's verdict caps or zeroes the critic's score; champion key is lexicographic | adjudicator synthesis over weighted, normalized critic scores |
+| **D5** | Update operator & anchoring | full regeneration · constrained regeneration · targeted patch/diff · operator-selection policy · anchor on latest / **champion** / population | feedback-conditioned **full regeneration**, champion-anchored, regression-guarded | option-set revision per iteration (population update) |
+| **D6** | Memory | stateless · transcript · **issue ledger with streaks** · champion archive · cross-run lessons · procedural library · user memory | issue ledger + champion archive, within a run only | session memory; opt-in persistent user memory; reusable critic library |
+| **D7** | Control & stopping | fixed *K* · score threshold · verifier-pass · **plateau Δ<ε** · unresolved-issue streak · budget exhaustion · sequential test · learned policy | threshold + budget. Streak data is computed but **never used for stopping** | adjudicator-adjusted meta-parameters, user-overridable |
+| **D8** | Topology & budget | sequential · parallel best-of-*N* · beam/tree · **hybrid seed-then-refine** · population/island · adaptive allocation | strictly sequential, with an inner retry loop; no budget accounting beyond iteration count | iterative panel rounds over an option population |
+| **D9** | Actor–critic relation | same model · same family · cross-family · specialized critic; critic sees artifact only / +evidence / +history / +generator rationale | arbiter is independent by construction. **The VLM critic defaults to the same model as the generator.** It sees artifact + evidence, but not history and not the generator's rationale | adjudicator separated from critics; critics see options + reasoning |
+| **D10** | Task properties *τ* | regime · error localizability · diffability · cost asymmetry · latency · stakes/reversibility · multi-objectivity · human availability | R2 · localizable · diffable · high evaluation cost · reversible | R0 · non-localizable · high stakes · human available |
+| **D11** | Human integration | none · input review · mid-loop approval · final acceptance · escalation-on-uncertainty; authority advisory / veto / co-editor | one gate: **drawing-interpretation review**, co-editor authority, before the loop starts | full HITL: answers, feedback, overrides with veto authority |
+
+### Pattern inventory — what cad-gen implements
+
+The same study collects recurring solutions as named patterns. Auditing cad-gen against them is the
+fastest way to see what the architecture covers and what it leaves open. Status is verified against
+the code, not asserted.
+
+| Pattern | Problem → solution | cad-gen | Where, or why not |
+|---|---|---|---|
+| **Verifier Gate** | Soft critics overrate invalid artifacts → a deterministic necessary-condition check caps or vetoes the score | **yes** | `_force_invalid_critique`, `_force_noop_critique`, reprojection soft-cap |
+| **Staged Objectives** | Optimizing quality before correctness wastes budget → satisfy hard constraints first, then quality | **yes** | inner traceback-retry loop inside the outer quality loop |
+| **Champion Anchoring** | Refining from the latest attempt drifts → always branch from best-so-far | **yes** | `_champion_key`, `_build_feedback` |
+| **Regression Guard** | Updates destroy prior gains → detect regressions and fall back | **yes** | champion anchoring *is* the rollback; `_format_regression` shows the model what it broke |
+| **Issue Ledger** | Loops re-introduce fixed defects and oscillate → track issues with streak counts | **yes** | `_update_ledger`, `TrackedIssue.streak` |
+| **Grounded Evidence Feedback** | Opinion-only critique is low fidelity → attach verifiable evidence | **yes** | reprojection overlays, validity and edit-diff digests |
+| **Measured-not-Claimed Metrics** | Generators misreport properties → inject tool-measured metrics into the critique | **yes** | kernel metrics from the sandbox; nothing self-reported |
+| **Actionability Contract** | Vague critique doesn't steer edits → structured schema of issues plus concrete suggestions | **yes** | the `Critique` schema |
+| **Modality-Split Critics** | Same-evidence critics correlate → split them by evidence channel | **yes**, implicitly | deterministic arbiter (geometry) vs. VLM critic (renders) |
+| **Self-Preference Firewall** | Generator-as-own-critic inflates scores → enforce generator ≠ critic | **partial** | the arbiter is independent; **the VLM critic defaults to the generator's own model** |
+| **Critic Cascade** | Expensive critics on every iteration waste budget → cheap checks first, escalate on uncertainty | **partial** | arbiters run first and can withhold, but the critic always runs regardless |
+| **Human Checkpoint Placement** | HITL everywhere is costly, nowhere is risky → gate at interpretation and acceptance | **partial** | interpretation gate only; no acceptance gate, no escalation-on-uncertainty |
+| **Patch-not-Regenerate** | Full regeneration loses correct structure → targeted diffs on localized errors | **no** | every refinement is a full rewrite — §9.1 |
+| **Hybrid Seeding** | Pure sequential exploits a bad basin → parallel seeds, then refine the champion | **no** | one candidate per iteration — §9.1 |
+| **Heterogeneous Critic Panel** | A single critic has blind spots → *k* critics diverse by model or persona | **no** | one VLM critic |
+| **Meta-Adjudicator** | Raw panel outputs conflict → a synthesis step producing one verdict | **no** | overrides are fixed rules, not a synthesis step — appropriate at *k*=1 |
+| **Debate-then-Aggregate** | Independent scores miss cross-examination → structured critic interaction first | **no** | no panel to debate |
+| **Stop-on-Streak / Plateau** | Fixed thresholds over- or under-iterate → stop on unresolved-issue streaks or a quality plateau | **no** | streaks are computed and used only to *order* the checklist — §9.1 |
+
+### Anti-patterns — what it is exposed to
+
+| Anti-pattern | Symptom | cad-gen | Evidence |
+|---|---|---|---|
+| **Averaging-over-Vetoes** | A compensatory mean masks a hard failure | **guarded** | the champion key is lexicographic; an invalid solid is zeroed, not averaged down |
+| **Amnesic Loop** | No memory → oscillation, re-introduced defects | **guarded** | the issue ledger, with persisters escalated to top priority |
+| **Feedback Flooding** | Long, unlocalized critique the model can't act on | **mostly guarded** | checklist is priority-ordered and the regression diff is capped at 1,800 chars; the issue list itself is uncapped |
+| **Infinite Polish** | No stopping rule → over-refinement | **partly guarded** | a hard budget stops it, but nothing detects a plateau — §4.5 spent 3 of 5 iterations at the same score |
+| **Threshold Theater** | Uncalibrated accept threshold | **exposed** | the threshold of 8 is a default, never calibrated; §5.2 shows accepts at 9 and 10 that were 3.8 g and 48.8 g wrong |
+| **Goodhart Spiral** | Proxy score rises, true quality doesn't | **exposed** | the critic's score *is* the optimization target and is a proxy; §5.2 is the measurement of that gap |
+| **Sycophant Critic** | Self-preference and verbosity bias steer edits | **exposed** | generator and critic default to the same model — the textbook precondition |
+| **Echo-Chamber Panel** | Nominal diversity, correlated errors | **not applicable** | there is no panel; the single-critic case is the degenerate limit of the same problem |
+
+### What the audit says
+
+- **The deterministic half of the design is well covered; the model-based half is thin.** Eight of
+  the nine implemented patterns concern measurement, gating and memory. Every unimplemented one —
+  panels, adjudication, debate, cascades — concerns the *critic*.
+- **The cheapest correction in this entire report is one environment variable.** cad-gen ships with
+  `CAD_GEN_MODEL` and `CAD_GEN_CRITIC_MODEL` both defaulting to `gpt-5.6-luna`, so the model that
+  writes the code also grades it. Setting the critic to a different family costs nothing, needs no
+  code change, and closes the Self-Preference Firewall gap that Sycophant Critic and Threshold
+  Theater both depend on. It should be tested before it is assumed to help — but it is the first
+  thing to try.
+- **Three unbuilt patterns are already the §9.1 backlog.** Hybrid Seeding, Patch-not-Regenerate and
+  Stop-on-Streak were written there from the whiteboard, before this framework existed. That they
+  reappear as named patterns with independent known uses is evidence they are standard moves rather
+  than local wishes — which raises the confidence that building them is worth the effort.
+- **The exposures are consistent with what was measured, not merely plausible.** Threshold Theater
+  and Goodhart Spiral both predict accepted-but-wrong artifacts; §5.2 found three. Infinite Polish
+  predicts wasted budget on a plateau; §4.5 spent 40 % of a run on one. The framework is not
+  decorating the results — it names failure modes the numbers had already caught.
 
 ---
 
@@ -573,34 +659,41 @@ At the time of writing, all 287 pass in under two minutes with no API key set, a
 ### 9.1 Designed on the whiteboard, deliberately not built
 
 These were part of the original framework sketch and were scoped out to get a complete, honest
-pipeline working first. Each is a well-defined addition to a specific GEARS stage.
+pipeline working first. Each is a well-defined addition to a specific GEARS stage — and each turns
+out to be a **named pattern** in the design space of §2, with known uses outside this project. The
+pattern name is given in brackets; it is the term to search for when picking the work up.
 
-- **Aggregate — n candidates per iteration, then select.** Today one candidate is generated per
+- **Aggregate — n candidates per iteration, then select** [Hybrid Seeding]. Today one candidate is generated per
   iteration and the inner loop only retries tracebacks. Sampling *n* candidates and choosing among
   them is the single highest-value change: §5.2 shows the system already produces the signal — 5 of
   8 accepted runs of the same part agreed within 0.4 g while three did not, and a consensus vote
   over candidate volume and bounding box would have caught every one of those errors without a
   single extra evaluator.
-- **Refine — scope the change.** Refinement is always a full rewrite anchored on the champion's
+- **Refine — scope the change** [Patch-not-Regenerate]. Refinement is always a full rewrite anchored on the champion's
   code. A *patch* scope (edit only the implicated region) versus *complete regeneration* should be
   chosen per issue: dimension corrections are patches; a reversed feature usually needs a rebuild.
-- **Stop — a plateau condition.** Stopping is currently on the score threshold or the iteration
+- **Stop — a plateau condition** [Stop-on-Streak / Plateau]. Stopping is currently on the score threshold or the iteration
   count. The sketched `|Δ| < ε` condition — stop when successive champions stop improving — would
   end runs like §4.4 after two iterations instead of five. The live run of §4.5 makes the case
   sharply: iterations 3, 4 and 5 each scored 7 with substantially the same critique, so **40 % of
   that run's budget bought nothing**, and the loop had no way to notice.
-- **Refine — escape a local minimum.** Champion-anchoring is what keeps hard cases from diverging,
+- **Refine — escape a local minimum** [Hybrid Seeding, restart variant]. Champion-anchoring is what keeps hard cases from diverging,
   and is also what traps them. Detecting a plateau (above) should trigger a deliberate restart from
   scratch, kept only if it beats the incumbent.
-- **Evaluate — more arbiters.** The evaluate stage is built as a plug-in set of measured checks, so
+- **Evaluate — more arbiters** [Heterogeneous Critic Panel, Modality-Split Critics]. The evaluate stage is built as a plug-in set of measured checks, so
   new ones drop in without touching the loop: CFD or FEM for functional parts, manufacturability
   (draft, wall thickness, tool access), and GD&T / tolerance conformance.
-- **Evaluate — human in the loop, mid-run.** There is a review gate today, but only before the run:
+- **Evaluate — human in the loop, mid-run** [Human Checkpoint Placement]. There is a review gate today, but only before the run:
   the operator edits the extracted dimension digest. Letting a human inject a correction *between
   iterations* is a small change to the feedback builder and the SSE contract.
 
 ### 9.2 Repository backlog
 
+- **Point the critic at a different model family** [Self-Preference Firewall]. `CAD_GEN_MODEL` and
+  `CAD_GEN_CRITIC_MODEL` both default to `gpt-5.6-luna`, so the model that writes the code also
+  grades it. Setting the critic to another family is one environment variable, no code change, and
+  it is the cheapest available move against the false accepts of §5.2. Measure it against the
+  §5.2 baseline rather than assuming it helps.
 - **Act on the locality gate.** `is_plausible_local_edit()` measures and returns `True` regardless.
   Turning the calibrated thresholds on is a contained change with a real effect on editing scores.
 - **A true hidden-surface renderer** (pyrender / OSMesa) to replace the NumPy z-buffer, for cleaner
