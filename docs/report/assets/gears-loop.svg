@@ -1,0 +1,221 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 900" width="1240" height="900"
+     role="img" aria-labelledby="gears-title gears-desc" class="gears-svg">
+  <title id="gears-title">The GEARS loop: Generate, Evaluate, Aggregate, Refine, Stop</title>
+  <desc id="gears-desc">Inputs feed a generator LLM that writes CAD code; the code is built by the
+    OpenCASCADE kernel and rendered; deterministic arbiters and a vision critic evaluate it; the
+    signals are aggregated into a champion and a feedback packet; refinement re-enters the
+    generator; the loop stops on the score threshold or an exhausted budget.</desc>
+
+  <style>
+    .gears-svg { font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    .gears-svg .surface   { fill: #f6f8fc; stroke: #b8c4d6; stroke-width: 1.5; }
+    .gears-svg .band      { fill: #eef2f9; stroke: #b8c4d6; stroke-width: 1.5; }
+    .gears-svg .panel-det { fill: #e8f5ee; stroke: #7fb99a; stroke-width: 1.5; }
+    .gears-svg .panel-vlm { fill: #fdf2e3; stroke: #d9ab6a; stroke-width: 1.5; }
+    .gears-svg .panel-out { fill: #e7eefb; stroke: #7d9fd6; stroke-width: 1.5; }
+    .gears-svg .h         { fill: #0d1b2a; font-size: 17px; font-weight: 700; letter-spacing: .02em; }
+    .gears-svg .h-sm      { fill: #0d1b2a; font-size: 13.5px; font-weight: 700; letter-spacing: .04em; }
+    .gears-svg .t         { fill: #33445c; font-size: 12.5px; }
+    .gears-svg .t-mono    { fill: #33445c; font-size: 11.5px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .gears-svg .lbl       { fill: #5b6b82; font-size: 11.5px; font-style: italic; }
+    .gears-svg .eyebrow   { fill: #5b6b82; font-size: 11px; font-weight: 600; letter-spacing: .1em; }
+    .gears-svg .flow      { fill: none; stroke: #5b7fbd; stroke-width: 2.2; stroke-linejoin: round; stroke-linecap: round; }
+    .gears-svg .flow-back { fill: none; stroke: #b0793f; stroke-width: 2.2; stroke-linejoin: round; stroke-linecap: round; }
+    .gears-svg .flow-thin { fill: none; stroke: #7fb99a; stroke-width: 1.8; stroke-dasharray: 5 4; }
+    .gears-svg .badge     { fill: #1d3f73; }
+    .gears-svg .badge-t   { fill: #ffffff; font-size: 15px; font-weight: 700; }
+    .gears-svg .ah        { fill: #5b7fbd; }
+    .gears-svg .ah-back   { fill: #b0793f; }
+    .gears-svg .ah-thin   { fill: #7fb99a; }
+
+    @media (prefers-color-scheme: dark) {
+      .gears-svg .surface   { fill: #16202e; stroke: #3b4c63; }
+      .gears-svg .band      { fill: #121a26; stroke: #3b4c63; }
+      .gears-svg .panel-det { fill: #14261d; stroke: #4e7c62; }
+      .gears-svg .panel-vlm { fill: #2a2114; stroke: #8a6a35; }
+      .gears-svg .panel-out { fill: #16233a; stroke: #4d6ea8; }
+      .gears-svg .h         { fill: #e8eef7; }
+      .gears-svg .h-sm      { fill: #e8eef7; }
+      .gears-svg .t         { fill: #adbccf; }
+      .gears-svg .t-mono    { fill: #adbccf; }
+      .gears-svg .lbl       { fill: #8496ab; }
+      .gears-svg .eyebrow   { fill: #8496ab; }
+      .gears-svg .flow      { stroke: #7fa3e0; }
+      .gears-svg .flow-back { stroke: #d79a5c; }
+      .gears-svg .flow-thin { stroke: #5f9e7e; }
+      .gears-svg .badge     { fill: #5b8ad6; }
+      .gears-svg .badge-t   { fill: #0b1220; }
+      .gears-svg .ah        { fill: #7fa3e0; }
+      .gears-svg .ah-back   { fill: #d79a5c; }
+      .gears-svg .ah-thin   { fill: #5f9e7e; }
+    }
+  </style>
+
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="ah"/>
+    </marker>
+    <marker id="ab" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="ah-back"/>
+    </marker>
+    <marker id="at" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="ah-thin"/>
+    </marker>
+  </defs>
+
+  <!-- ============================ ROW A: generate → code → kernel → render ============================ -->
+
+  <!-- INPUTS -->
+  <rect class="surface" x="24" y="56" width="176" height="126" rx="10"/>
+  <text class="eyebrow" x="40" y="80">INPUTS</text>
+  <text class="t" x="40" y="104">technical drawing(s)</text>
+  <text class="t" x="40" y="124">text specification</text>
+  <text class="t" x="40" y="144">base STEP — editing</text>
+  <text class="lbl" x="40" y="167">human reviews the</text>
+  <text class="lbl" x="40" y="181">dimension digest first</text>
+
+  <path class="flow" marker-end="url(#a)" d="M200,119 H248"/>
+
+  <!-- G · GENERATE -->
+  <rect class="surface" x="256" y="40" width="276" height="158" rx="10"/>
+  <circle class="badge" cx="284" cy="68" r="15"/>
+  <text class="badge-t" x="284" y="74" text-anchor="middle">G</text>
+  <text class="h" x="310" y="74">GENERATE</text>
+  <text class="t" x="276" y="102">an LLM writes the CAD program</text>
+  <text class="t-mono" x="276" y="126">execute_cad_code · inspect_geometry</text>
+  <text class="t-mono" x="276" y="144">check_selector · find_geometry</text>
+  <text class="lbl" x="276" y="168">inner loop: retry on traceback,</text>
+  <text class="lbl" x="276" y="184">≤ 4 attempts, before anything is scored</text>
+
+  <path class="flow-thin" marker-end="url(#at)" d="M506,198 C506,224 462,224 462,200"/>
+  <text class="lbl" x="516" y="220">retry on error</text>
+
+  <path class="flow" marker-end="url(#a)" d="M532,119 H576"/>
+
+  <!-- CODE -->
+  <rect class="surface" x="584" y="56" width="168" height="126" rx="10"/>
+  <text class="eyebrow" x="600" y="80">SYNTACTIC LAYER</text>
+  <text class="t" x="600" y="106">CadQuery</text>
+  <text class="t" x="600" y="126">build123d</text>
+  <text class="lbl" x="600" y="152">swappable per run;</text>
+  <text class="lbl" x="600" y="168">everything below is</text>
+  <text class="lbl" x="600" y="181">library-agnostic</text>
+
+  <path class="flow" marker-end="url(#a)" d="M752,119 H800"/>
+
+  <!-- KERNEL -->
+  <rect class="surface" x="808" y="56" width="168" height="126" rx="10"/>
+  <text class="eyebrow" x="824" y="80">KERNEL</text>
+  <text class="t" x="824" y="106">OpenCASCADE</text>
+  <text class="t" x="824" y="126">B-rep · STEP · STL</text>
+  <text class="lbl" x="824" y="152">every measurement</text>
+  <text class="lbl" x="824" y="168">comes from here,</text>
+  <text class="lbl" x="824" y="181">never self-reported</text>
+
+  <path class="flow" marker-end="url(#a)" d="M976,119 H1024"/>
+
+  <!-- RENDER -->
+  <rect class="surface" x="1032" y="56" width="184" height="126" rx="10"/>
+  <text class="eyebrow" x="1048" y="80">RENDER</text>
+  <text class="t" x="1048" y="106">headless z-buffer</text>
+  <text class="t" x="1048" y="126">iso · front · top · right</text>
+  <text class="lbl" x="1048" y="152">exact hidden surfaces,</text>
+  <text class="lbl" x="1048" y="168">no GPU required</text>
+
+  <path class="flow" marker-end="url(#a)" d="M1124,182 V228"/>
+
+  <!-- ============================ ROW B: EVALUATE ============================ -->
+
+  <rect class="band" x="256" y="236" width="960" height="250" rx="12"/>
+  <circle class="badge" cx="284" cy="266" r="15"/>
+  <text class="badge-t" x="284" y="272" text-anchor="middle">E</text>
+  <text class="h" x="310" y="272">EVALUATE</text>
+  <text class="lbl" x="424" y="272">every arbiter runs before the critic, so its verdict grounds the critique instead of competing with it</text>
+
+  <!-- deterministic panel -->
+  <rect class="panel-det" x="276" y="290" width="556" height="178" rx="9"/>
+  <text class="h-sm" x="294" y="316">DETERMINISTIC ARBITERS · external</text>
+  <text class="t" x="294" y="342">kernel metrics — volume · bbox · COM · n_solids · n_faces · watertight</text>
+  <text class="t" x="294" y="364">reprojection overlap against the drawing — OCCT hidden-line + OpenCV</text>
+  <text class="t" x="294" y="386">validity gate — BRepCheck · closed shells · manifold tessellation</text>
+  <text class="t" x="294" y="408">editing — measured no-op guard, boolean before/after diff</text>
+  <text class="t" x="294" y="430">drawing constraints — envelope and hole callouts as assertions</text>
+  <text class="lbl" x="294" y="454">a VLM only proposes the view boxes; the overlap score judges them</text>
+
+  <!-- critic panel -->
+  <rect class="panel-vlm" x="852" y="290" width="344" height="178" rx="9"/>
+  <text class="h-sm" x="870" y="316">VISION CRITIC · self</text>
+  <text class="t" x="870" y="342">reads render, drawing, metrics,</text>
+  <text class="t" x="870" y="362">code and the arbiters' digests</text>
+  <text class="t-mono" x="870" y="392">Critique { score 0–10,</text>
+  <text class="t-mono" x="870" y="410">matches_spec, issues,</text>
+  <text class="t-mono" x="870" y="428">suggestions }</text>
+  <text class="lbl" x="870" y="454">soft-capped while reprojection fails</text>
+
+  <path class="flow-thin" marker-end="url(#at)" d="M832,379 H846"/>
+  <text class="lbl" x="838" y="368" text-anchor="middle">grounds</text>
+
+  <path class="flow" marker-end="url(#a)" d="M606,486 V516"/>
+
+  <!-- ============================ ROW C: AGGREGATE + STOP ============================ -->
+
+  <rect class="band" x="256" y="524" width="700" height="190" rx="12"/>
+  <circle class="badge" cx="284" cy="554" r="15"/>
+  <text class="badge-t" x="284" y="560" text-anchor="middle">A</text>
+  <text class="h" x="310" y="560">AGGREGATE</text>
+  <text class="lbl" x="426" y="560">many heterogeneous signals → one ranking, one feedback packet</text>
+  <text class="t" x="276" y="592">champion key = (valid?, score, index) — a valid 5 outranks an invalid 9</text>
+  <text class="t" x="276" y="616">hard overrides — invalid solid → 0 · measured no-op → 0</text>
+  <text class="t" x="276" y="640">issue ledger across iterations → “STILL UNFIXED after N attempts”</text>
+  <text class="t" x="276" y="664">multi-sheet reprojection reports combined into one verdict</text>
+  <text class="t" x="276" y="688">a unified diff is attached when the last change scored worse</text>
+
+  <path class="flow" marker-end="url(#a)" d="M956,609 H988"/>
+
+  <!-- S · STOP -->
+  <rect class="surface" x="996" y="524" width="220" height="190" rx="12"/>
+  <circle class="badge" cx="1024" cy="554" r="15"/>
+  <text class="badge-t" x="1024" y="560" text-anchor="middle">S</text>
+  <text class="h" x="1050" y="560">STOP</text>
+  <text class="t" x="1016" y="592">score ≥ threshold</text>
+  <text class="t" x="1016" y="614">→ accept</text>
+  <text class="t" x="1016" y="640">budget exhausted</text>
+  <text class="t" x="1016" y="662">→ best valid candidate</text>
+  <text class="lbl" x="1016" y="690">never fails open</text>
+
+  <path class="flow" marker-end="url(#a)" d="M1106,714 V748"/>
+
+  <!-- OUTPUT -->
+  <rect class="panel-out" x="996" y="756" width="220" height="116" rx="10"/>
+  <text class="eyebrow" x="1016" y="780">OUTPUT</text>
+  <text class="t" x="1016" y="804">STEP · STL · model.py</text>
+  <text class="t" x="1016" y="826">report.md · full trace</text>
+  <text class="lbl" x="1016" y="852">exit 0 accepted · 1 best effort</text>
+
+  <!-- ============================ R · REFINE + return path ============================ -->
+
+  <path class="flow-back" marker-end="url(#ab)" d="M256,609 H232"/>
+  <text class="lbl" x="244" y="598" text-anchor="middle">no</text>
+
+  <rect class="surface" x="24" y="524" width="200" height="190" rx="12"/>
+  <circle class="badge" cx="52" cy="554" r="15"/>
+  <text class="badge-t" x="52" y="560" text-anchor="middle">R</text>
+  <text class="h" x="78" y="560">REFINE</text>
+  <text class="t" x="44" y="588">start from the champion’s</text>
+  <text class="t" x="44" y="606">code, not the last attempt</text>
+  <text class="t" x="44" y="630">priority-ordered checklist,</text>
+  <text class="t" x="44" y="648">persisters flagged first</text>
+  <text class="t" x="44" y="672">overlay says where,</text>
+  <text class="t" x="44" y="690">the drawing says how much</text>
+
+  <path class="flow-back" marker-end="url(#ab)" d="M124,524 V222 H300 V204"/>
+  <text class="lbl" x="212" y="216" text-anchor="middle">next iteration</text>
+
+  <!-- ============================ closing note ============================ -->
+  <path class="flow" d="M26,762 V858" stroke-width="3"/>
+  <text class="eyebrow" x="46" y="780">THE DESIGN PRINCIPLE</text>
+  <text class="t" x="46" y="806">The LLM proposes; something deterministic decides. Every signal the critic is given is</text>
+  <text class="t" x="46" y="828">measured from the geometry — and the unambiguous ones, an invalid solid or an unchanged</text>
+  <text class="t" x="46" y="850">model, override the critic outright rather than arguing with it.</text>
+
+</svg>

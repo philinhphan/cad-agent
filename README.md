@@ -19,6 +19,10 @@ supported provider works by changing one model string (OpenAI by default). Ships
 CLI, a Python library API, and a **Next.js + FastAPI web dashboard** that streams every
 iteration live and renders the generated solid in 3D in the browser.
 
+> **New here?** [`docs/report/README.md`](docs/report/README.md) is the project report: the
+> **GEARS** framework the loop is built on, worked demos with real renders, the measured
+> results, the limitations, and where to pick the project up. This file is the operator manual.
+
 ```
 drawing (+ optional text) ─► ORCHESTRATOR (outer loop: quality)
                     │

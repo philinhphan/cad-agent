@@ -1,0 +1,188 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 800" width="1240" height="800"
+     role="img" aria-labelledby="pipe-title pipe-desc" class="pipe-svg">
+  <title id="pipe-title">cad-gen implementation stage map</title>
+  <desc id="pipe-desc">Three columns: one-off setup and drawing interpretation, the self-refine loop
+    with its stages, and the finalize step. Each stage names the module that implements it and the
+    artifact it writes.</desc>
+
+  <style>
+    .pipe-svg { font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    .pipe-svg .card    { fill: #f6f8fc; stroke: #b8c4d6; stroke-width: 1.4; }
+    .pipe-svg .card-hi { fill: #e8f5ee; stroke: #7fb99a; stroke-width: 1.4; }
+    .pipe-svg .card-ed { fill: #fdf2e3; stroke: #d9ab6a; stroke-width: 1.4; }
+    .pipe-svg .loopbox { fill: none; stroke: #5b7fbd; stroke-width: 1.8; stroke-dasharray: 7 5; }
+    .pipe-svg .col     { fill: #0d1b2a; font-size: 14px; font-weight: 700; letter-spacing: .06em; }
+    .pipe-svg .n       { fill: #1d3f73; font-size: 12px; font-weight: 700; }
+    .pipe-svg .s       { fill: #0d1b2a; font-size: 13px; font-weight: 650; }
+    .pipe-svg .m       { fill: #4b5c74; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .pipe-svg .o       { fill: #5b6b82; font-size: 11px; font-style: italic; }
+    .pipe-svg .tag     { fill: #5b6b82; font-size: 10.5px; font-weight: 700; letter-spacing: .1em; }
+    .pipe-svg .fl      { fill: none; stroke: #5b7fbd; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+    .pipe-svg .fl-b    { fill: none; stroke: #b0793f; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+    .pipe-svg .ahp     { fill: #5b7fbd; }
+    .pipe-svg .ahp-b   { fill: #b0793f; }
+
+    @media (prefers-color-scheme: dark) {
+      .pipe-svg .card    { fill: #16202e; stroke: #3b4c63; }
+      .pipe-svg .card-hi { fill: #14261d; stroke: #4e7c62; }
+      .pipe-svg .card-ed { fill: #2a2114; stroke: #8a6a35; }
+      .pipe-svg .loopbox { stroke: #7fa3e0; }
+      .pipe-svg .col     { fill: #e8eef7; }
+      .pipe-svg .n       { fill: #7fa3e0; }
+      .pipe-svg .s       { fill: #e8eef7; }
+      .pipe-svg .m       { fill: #9fb0c6; }
+      .pipe-svg .o       { fill: #8496ab; }
+      .pipe-svg .tag     { fill: #8496ab; }
+      .pipe-svg .fl      { stroke: #7fa3e0; }
+      .pipe-svg .fl-b    { stroke: #d79a5c; }
+      .pipe-svg .ahp     { fill: #7fa3e0; }
+      .pipe-svg .ahp-b   { fill: #d79a5c; }
+    }
+  </style>
+
+  <defs>
+    <marker id="pa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="ahp"/>
+    </marker>
+    <marker id="pb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="ahp-b"/>
+    </marker>
+  </defs>
+
+  <!-- ================= COLUMN A — setup, once ================= -->
+  <text class="col" x="24" y="34">ONCE, AT RUN START</text>
+
+  <rect class="card" x="24" y="48" width="316" height="68" rx="8"/>
+  <text class="n" x="38" y="70">0</text>
+  <text class="s" x="56" y="70">run setup</text>
+  <text class="m" x="38" y="88">orchestrator.generate_cad</text>
+  <text class="o" x="38" y="105">→ run_dir/ · spec.txt · config.json · input/</text>
+
+  <text class="tag" x="24" y="140">DRAWING MODE</text>
+  <rect class="card-hi" x="24" y="150" width="316" height="85" rx="8"/>
+  <text class="n" x="38" y="172">1</text>
+  <text class="s" x="56" y="172">interpret the drawing</text>
+  <text class="m" x="38" y="190">agents/drawing_parser.py</text>
+  <text class="o" x="38" y="207">→ dimension digest, in Markdown</text>
+  <text class="o" x="38" y="224">↳ human review gate — CLI $EDITOR or web</text>
+
+  <rect class="card" x="24" y="245" width="316" height="68" rx="8"/>
+  <text class="n" x="38" y="267">2</text>
+  <text class="s" x="56" y="267">structured constraints</text>
+  <text class="m" x="38" y="285">drawing_constraints.py</text>
+  <text class="o" x="38" y="302">→ envelope · hole callouts, as assertions</text>
+
+  <rect class="card" x="24" y="323" width="316" height="52" rx="8"/>
+  <text class="n" x="38" y="345">3</text>
+  <text class="s" x="56" y="345">CV primitive extraction</text>
+  <text class="m" x="38" y="363">reproject/drawing_primitives.py</text>
+
+  <rect class="card" x="24" y="385" width="316" height="68" rx="8"/>
+  <text class="n" x="38" y="407">4</text>
+  <text class="s" x="56" y="407">locate views — a VLM proposes</text>
+  <text class="m" x="38" y="425">reproject/locator.py</text>
+  <text class="o" x="38" y="442">→ front / top / side boxes</text>
+
+  <text class="tag" x="24" y="477">EDITING MODE — INSTEAD OF 1–4</text>
+  <rect class="card-ed" x="24" y="487" width="316" height="52" rx="8"/>
+  <text class="n" x="38" y="509">1e</text>
+  <text class="s" x="60" y="509">seed the base model</text>
+  <text class="m" x="38" y="527">input.step → every sandbox dir</text>
+
+  <rect class="card-ed" x="24" y="549" width="316" height="68" rx="8"/>
+  <text class="n" x="38" y="571">2e</text>
+  <text class="s" x="60" y="571">measured feature briefing</text>
+  <text class="m" x="38" y="589">base_briefing.py</text>
+  <text class="o" x="38" y="606">→ bore and wall inventory of the base</text>
+
+  <path class="fl" marker-end="url(#pa)" d="M340,330 H364"/>
+
+  <!-- ================= COLUMN B — the loop ================= -->
+  <text class="col" x="372" y="34">THE SELF-REFINE LOOP — ≤ max_iterations</text>
+  <rect class="loopbox" x="372" y="48" width="524" height="612" rx="12"/>
+
+  <rect class="card" x="418" y="64" width="458" height="52" rx="8"/>
+  <text class="n" x="432" y="86">5</text>
+  <text class="s" x="450" y="86">build prompt — spec + feedback + drawing + overlay</text>
+  <text class="m" x="432" y="104">orchestrator._build_prompt</text>
+
+  <rect class="card" x="418" y="126" width="458" height="68" rx="8"/>
+  <text class="n" x="432" y="148">6</text>
+  <text class="s" x="450" y="148">GENERATE — write the CAD program</text>
+  <text class="m" x="432" y="166">agents/generator.py</text>
+  <text class="o" x="432" y="183">retries on its own traceback, ≤ 4 attempts, before anything is scored</text>
+
+  <rect class="card" x="418" y="204" width="458" height="68" rx="8"/>
+  <text class="n" x="432" y="226">7</text>
+  <text class="s" x="450" y="226">EXECUTE in a subprocess sandbox</text>
+  <text class="m" x="432" y="244">sandbox/executor.py · sandbox/harness.py</text>
+  <text class="o" x="432" y="261">→ model.stl · model.step · metrics.json, measured by the kernel</text>
+
+  <rect class="card" x="418" y="282" width="458" height="52" rx="8"/>
+  <text class="n" x="432" y="304">8</text>
+  <text class="s" x="450" y="304">RENDER four views — headless z-buffer</text>
+  <text class="m" x="432" y="322">rendering/renderer.py</text>
+
+  <rect class="card-hi" x="418" y="344" width="458" height="106" rx="8"/>
+  <text class="n" x="432" y="366">9</text>
+  <text class="s" x="450" y="366">DETERMINISTIC ARBITERS — all before the critic</text>
+  <text class="m" x="432" y="386">reproject/adapter.py → reproject/check.py</text>
+  <text class="o" x="432" y="403">per-view coverage · colour overlays · mismatch clusters</text>
+  <text class="m" x="432" y="423">step_metrics.py · step_validity.py · drawing_constraints.py</text>
+  <text class="o" x="432" y="440">editing no-op guard · BRepCheck, shells, mesh · envelope check</text>
+
+  <rect class="card-ed" x="418" y="460" width="458" height="68" rx="8"/>
+  <text class="n" x="432" y="482">10</text>
+  <text class="s" x="456" y="482">CRITIQUE — vision model</text>
+  <text class="m" x="432" y="500">agents/critic.py</text>
+  <text class="o" x="432" y="517">→ Critique { score 0–10, matches_spec, issues, suggestions }</text>
+
+  <rect class="card" x="418" y="538" width="458" height="104" rx="8"/>
+  <text class="n" x="432" y="560">11</text>
+  <text class="s" x="456" y="560">AGGREGATE — override, rank, and write the feedback</text>
+  <text class="m" x="432" y="578">_force_invalid_critique · _force_noop_critique</text>
+  <text class="m" x="432" y="596">_champion_key · _update_ledger</text>
+  <text class="m" x="432" y="614">_build_feedback · _format_checklist · _format_regression</text>
+  <text class="o" x="432" y="632">→ iteration.json, then accept or loop</text>
+
+  <!-- return arrow inside the loop -->
+  <path class="fl-b" marker-end="url(#pb)" d="M418,600 H396 V90 H410"/>
+  <text class="o" x="390" y="350" text-anchor="middle" transform="rotate(-90 390 350)">next iteration</text>
+
+  <path class="fl" marker-end="url(#pa)" d="M896,286 H920"/>
+  <text class="o" x="908" y="276" text-anchor="middle">done</text>
+
+  <!-- ================= COLUMN C — finalize ================= -->
+  <text class="col" x="928" y="34">AFTER THE LOOP</text>
+
+  <rect class="card-ed" x="928" y="252" width="288" height="68" rx="8"/>
+  <text class="n" x="942" y="274">13</text>
+  <text class="s" x="966" y="274">boolean edit diff — editing</text>
+  <text class="m" x="942" y="292">edit_diff.py</text>
+  <text class="o" x="942" y="309">→ what moved, and where</text>
+
+  <path class="fl" marker-end="url(#pa)" d="M1072,320 V336"/>
+
+  <rect class="card" x="928" y="340" width="288" height="85" rx="8"/>
+  <text class="n" x="942" y="362">14</text>
+  <text class="s" x="966" y="362">finalize</text>
+  <text class="m" x="942" y="380">_persist_final · _write_report</text>
+  <text class="o" x="942" y="397">→ final/ · report.md</text>
+  <text class="o" x="942" y="414">→ run_result.json</text>
+
+  <path class="fl" marker-end="url(#pa)" d="M1072,425 V441"/>
+
+  <rect class="card" x="928" y="445" width="288" height="85" rx="8"/>
+  <text class="n" x="942" y="467">15</text>
+  <text class="s" x="966" y="467">benchmark — optional</text>
+  <text class="m" x="942" y="485">bench/adapter.py · bench/submission.py</text>
+  <text class="o" x="942" y="502">→ output.step · submission zip</text>
+  <text class="o" x="942" y="519">validity fallback chain applies here</text>
+
+  <!-- footnote -->
+  <path class="fl" d="M26,690 V774" stroke-width="3"/>
+  <text class="o" x="46" y="708">Every stage writes its artifact under runs/&lt;timestamp&gt;/, so a finished run is a complete, re-readable trace:</text>
+  <text class="m" x="46" y="730">spec.txt · config.json · input/ · drawing_interpretation.md · iter_NN/{ attempt_MM/, views.png, reproject/, iteration.json }</text>
+  <text class="m" x="46" y="748">final/{ model.py, model.stl, model.step, views.png, critique.json, edit_diff.json } · report.md · run_result.json</text>
+  <text class="o" x="46" y="772">Green = deterministic and measured · amber = model-based, or editing-mode only. The loop never trusts a number it did not measure.</text>
+</svg>
