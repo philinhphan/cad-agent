@@ -494,3 +494,88 @@ async def test_concurrent_probes_do_not_cross_results(tmp_path):
 
     assert result.output == "done"
     assert len(ws.introspections) == 2
+
+
+def test_concurrent_probes_get_distinct_working_directories(tmp_path):
+    """Regression: two probes in one model turn must not share a working directory.
+
+    pydantic-ai dispatches sync tool functions to a thread pool. The slot index used to
+    come from len(introspections), which is only appended AFTER the blocking subprocess
+    returns — so concurrent probes computed the same index and shared one directory.
+    `introspect_cad_code` writes `query.json` there, so the second probe clobbered the
+    first and a subprocess asked for "describe" answered a "query". Observed live as
+    KeyError: 'bbox_mm' / 'target', which zeroed 12 CADGenBench samples.
+    """
+    import concurrent.futures as cf
+    import time
+
+    seen: list[str] = []
+
+    def slow_introspector(code, query, out_dir, timeout_s=30, **kwargs):
+        seen.append(Path(out_dir).name)
+        time.sleep(0.05)  # hold the slot open, like a real subprocess
+        return IntrospectionResult(ok=True, data={"mode": query["mode"]})
+
+    ws = IterationWorkspace(iter_dir=tmp_path, introspector=slow_introspector)
+    modes = ["describe", "selector", "query", "describe"]
+    with cf.ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(lambda m: ws.introspect("code", {"mode": m}), modes))
+
+    assert len(seen) == 4
+    assert len(set(seen)) == 4, f"probe dirs collided: {seen}"
+    assert len(ws.introspections) == 4
+
+
+def test_concurrent_executions_get_distinct_working_directories(tmp_path):
+    """Same reservation bug on the execute path: attempts must not share a directory."""
+    import concurrent.futures as cf
+    import time
+
+    seen: list[str] = []
+
+    def slow_executor(code, out_dir, timeout_s=60, **kwargs):
+        seen.append(Path(out_dir).name)
+        time.sleep(0.05)
+        return ExecutionResult(success=True, code=code, duration_s=0.01)
+
+    ws = IterationWorkspace(iter_dir=tmp_path, executor=slow_executor)
+    with cf.ThreadPoolExecutor(max_workers=3) as pool:
+        list(pool.map(lambda c: ws.execute(c), ["a", "b", "c"]))
+
+    assert len(set(seen)) == 3, f"attempt dirs collided: {seen}"
+    assert len(ws.attempts) == 3
+
+
+async def test_probe_rejects_a_mode_the_harness_did_not_run(tmp_path):
+    """A harness that falls through on an unsupported mode must not reach the formatter.
+
+    build123d's introspection harness has no 'query' mode and silently returned a
+    describe payload, which `format_query` then read for data['target'].
+    """
+    def wrong_mode_introspector(code, query, out_dir, timeout_s=30, **kwargs):
+        # Answer every request with a describe payload, as the fall-through did.
+        return IntrospectionResult(ok=True, data={"mode": "describe", **DESCRIBE_DATA})
+
+    ws = IterationWorkspace(
+        iter_dir=tmp_path, introspector=wrong_mode_introspector, library="build123d"
+    )
+
+    captured: list[str] = []
+
+    def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        for m in messages:
+            for part in getattr(m, "parts", []):
+                if type(part).__name__ == "ToolReturnPart":
+                    captured.append(str(part.content))
+        if len(messages) == 1:
+            return ModelResponse(parts=[
+                ToolCallPart("find_geometry", {"code": GOOD_CODE, "target": "faces"}),
+            ])
+        return ModelResponse(parts=[TextPart("done")])
+
+    agent = build_generator_agent(FunctionModel(model_fn), editing=True, library="build123d")
+    result = await agent.run("move the +X wall", deps=ws)
+
+    assert result.output == "done"
+    # The tool reported the mismatch instead of raising KeyError deep in formatting.
+    assert any("does not support" in c for c in captured), captured

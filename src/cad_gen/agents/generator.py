@@ -1,5 +1,6 @@
 """Generator agent: writes CAD code and validates it via the sandbox tool."""
 
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,6 +48,10 @@ class IterationWorkspace:
     seed_files: dict[str, bytes] = field(default_factory=dict)
     # CAD library the generated code is written in; selects the sandbox harness.
     library: CadLibrary = DEFAULT_LIBRARY
+    # Guard for slot reservation and the result lists. pydantic-ai dispatches sync tool
+    # functions to a thread pool, so two tool calls in one model turn genuinely race here.
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+    _counters: dict[str, int] = field(default_factory=dict, repr=False, compare=False)
 
     @property
     def last_success(self) -> ExecutionResult | None:
@@ -66,20 +71,39 @@ class IterationWorkspace:
             extra["library"] = self.library
         return extra
 
+    def _reserve(self, counter: str) -> int:
+        """Atomically claim the next 1-based working-directory slot for `counter`.
+
+        Deliberately NOT derived from len(attempts)/len(introspections): those lists are
+        appended only AFTER the blocking subprocess returns, and pydantic-ai dispatches
+        sync tool functions to a thread pool. Two tool calls emitted in one model turn
+        therefore computed the same index and shared one working directory — where
+        `introspect_cad_code` writes `query.json`, so the second probe clobbered the
+        first and a subprocess asked for "describe" answered a "query" instead. That
+        surfaced as `KeyError: 'bbox_mm'` / `KeyError: 'target'` and zeroed 12 samples
+        of a CADGenBench run.
+        """
+        with self._lock:
+            value = self._counters.get(counter, 0) + 1
+            self._counters[counter] = value
+            return value
+
     def execute(self, code: str) -> ExecutionResult:
-        attempt_dir = self.iter_dir / f"attempt_{len(self.attempts) + 1:02d}"
+        attempt_dir = self.iter_dir / f"attempt_{self._reserve('attempt'):02d}"
         result = self.executor(
             code, attempt_dir, timeout_s=self.timeout_s, **self._extra_kwargs()
         )
-        self.attempts.append(result)
+        with self._lock:
+            self.attempts.append(result)
         return result
 
     def introspect(self, code: str, query: dict) -> IntrospectionResult:
-        probe_dir = self.iter_dir / f"inspect_{len(self.introspections) + 1:02d}"
+        probe_dir = self.iter_dir / f"inspect_{self._reserve('inspect'):02d}"
         result = self.introspector(
             code, query, probe_dir, timeout_s=self.inspect_timeout_s, **self._extra_kwargs()
         )
-        self.introspections.append(result)
+        with self._lock:
+            self.introspections.append(result)
         return result
 
 
@@ -292,6 +316,20 @@ def build_generator_agent(
                 "The probe could not build your code:\n"
                 f"{result.error}\n"
                 "Fix the code, then probe or run it again.",
+                None,
+            )
+        # Belt and braces: the harness echoes back the mode it actually ran. A mismatch
+        # means the payload does not match the formatter about to read it, which raises an
+        # opaque KeyError deep in formatting and zeroes the sample. Fail loudly instead —
+        # this catches both a shared-directory race and a harness that silently falls
+        # through on a mode it does not implement.
+        wanted = query.get("mode", "describe")
+        got = result.data.get("mode")
+        if got != wanted:
+            return (
+                f"Probe returned a {got!r} result for a {wanted!r} request — the "
+                f"{ws.library} introspection harness does not support {wanted!r}. "
+                "Use a different probe tool.",
                 None,
             )
         return None, result.data
