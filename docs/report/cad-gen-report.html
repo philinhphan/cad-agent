@@ -915,7 +915,7 @@
       <div class="tb-cell"><span class="tb-k">Author</span><span class="tb-v">Phi Linh · AI Software Engineer</span>
       </div>
       <div class="tb-cell"><span class="tb-k">Organisation</span><span class="tb-v">BMW Group</span></div>
-      <div class="tb-cell"><span class="tb-k">Period</span><span class="tb-v">13 Jun – 31 Jul 2026</span></div>
+      <div class="tb-cell"><span class="tb-k">Period</span><span class="tb-v">13 Jun – 17 Aug 2026</span></div>
       <div class="tb-cell"><span class="tb-k">Framework</span><span class="tb-v">GEARS</span></div>
       <div class="tb-cell"><span class="tb-k">Source</span><span class="tb-v">8,769 lines · 39 modules</span></div>
       <div class="tb-cell"><span class="tb-k">History</span><span class="tb-v">34 commits</span></div>
@@ -1210,7 +1210,8 @@
               <strong>inner correctness loop</strong> lets it run its own code via <code>execute_cad_code</code> and fix
               tracebacks <em>before anything is scored</em> (≤ 4 attempts). Read-only probes —
               <code>inspect_geometry</code>, <code>check_selector</code> / <code>check_selection</code>,
-              <code>find_geometry</code> — let it confirm a face or edge selection before committing to it.</td>
+              <code>find_geometry</code> — let it confirm a face or edge selection before committing to it.
+            </td>
             <td><code>agents/generator.py</code>, <code>agents/prompts.py</code>, <code>sandbox/</code></td>
             <td>The syntactic layer is swappable per run (<code>--library cadquery|build123d</code>). Both compile to
               the same OpenCASCADE kernel, so everything downstream is library-agnostic.</td>
@@ -1221,10 +1222,12 @@
               counts, watertightness); the <strong>reprojection overlap</strong> of the solid against the drawing's line
               work; the <strong>validity gate</strong> (BRepCheck, closed shells, manifold tessellation); the
               <strong>no-op guard</strong> and boolean <strong>edit diff</strong> for editing; and the structured
-              drawing constraints. Only then does the vision critic score it.</td>
+              drawing constraints. Only then does the vision critic score it.
+            </td>
             <td><code>sandbox/harness.py</code>, <code>rendering/renderer.py</code>, <code>reproject/</code>,
               <code>step_validity.py</code>, <code>step_metrics.py</code>, <code>edit_diff.py</code>,
-              <code>agents/critic.py</code></td>
+              <code>agents/critic.py</code>
+            </td>
             <td>Every arbiter runs <strong>before</strong> the critic, so its verdict <em>grounds</em> the critique
               instead of competing with it. In the reprojection check a VLM only <em>proposes</em> the view boxes — a
               deterministic overlap score judges them, so the check can false-negative but can never fake a pass.</td>
@@ -1237,7 +1240,8 @@
               ledger that tracks each critique issue across iterations by fuzzy match.</td>
             <td><code>orchestrator.py</code> — <code>_champion_key</code>, <code>_force_invalid_critique</code>,
               <code>_force_noop_critique</code>, <code>_update_ledger</code>, <code>_select_by_edit_diff</code>;
-              <code>reproject/adapter.py</code></td>
+              <code>reproject/adapter.py</code>
+            </td>
             <td><strong>A valid 5 outranks an invalid 9.</strong> An invalid solid is worth zero downstream whatever
               else is right about it, so validity is the first sort key and the scalar score only ranks <em>within</em>
               the valid set.</td>
@@ -1249,10 +1253,12 @@
               reviewer's suggestions, the reprojection overlay as a spatial locator, and a unified diff of the change
               when the last one scored worse.</td>
             <td><code>orchestrator.py</code> — <code>_build_feedback</code>, <code>_format_checklist</code>,
-              <code>_format_regression</code>, <code>_build_prompt</code></td>
+              <code>_format_regression</code>, <code>_build_prompt</code>
+            </td>
             <td>Anchoring on the champion is what stops the loop drifting away from a good design. The overlay says
               <strong>where</strong> the geometry disagrees; the original drawing remains the only source of <strong>how
-                much</strong> — the overlay is dimensionless and the prompt says so.</td>
+                much</strong> — the overlay is dimensionless and the prompt says so.
+            </td>
           </tr>
           <tr>
             <td>S · Stop</td>
@@ -1311,7 +1317,8 @@
             <td class="n">D2</td>
             <td>Critic multiplicity &amp; diversity</td>
             <td>single · panel of <em>k</em>; diversity by sampling · persona · rubric split · model family ·
-              <strong>evidence/modality split</strong> · fine-tune</td>
+              <strong>evidence/modality split</strong> · fine-tune
+            </td>
             <td>single VLM critic + deterministic arbiter — an implicit 2-critic setup split by evidence channel</td>
             <td><em>k</em> critics, persona + weights, user-editable</td>
           </tr>
@@ -1601,7 +1608,8 @@
         <code>CAD_GEN_MODEL</code> and <code>CAD_GEN_CRITIC_MODEL</code> both defaulting to <code>gpt-5.6-luna</code>,
         so the model that writes the code also grades it. Setting the critic to a different family costs nothing, needs
         no code change, and closes the Self-Preference Firewall gap that Sycophant Critic and Threshold Theater both
-        depend on. It should be tested before it is assumed to help — but it is the first thing to try.</li>
+        depend on. It should be tested before it is assumed to help — but it is the first thing to try.
+      </li>
       <li><strong>Three unbuilt patterns are already the section 09 backlog.</strong> Hybrid Seeding,
         Patch-not-Regenerate and Stop-on-Streak were written there from the whiteboard, before this framework existed.
         That they reappear as named patterns with independent known uses is evidence they are standard moves rather than
@@ -1810,7 +1818,8 @@
         <code>FunctionModel</code> with <code>ALLOW_MODEL_REQUESTS=False</code>, so the whole loop runs with no API key
         and no network. The geometric checks are tested against <strong>real OpenCASCADE</strong>, not mocks — a mocked
         <code>BRepCheck</code> would simply agree with whatever the code believed. Generator prompts are pinned to
-        snapshots under <code>tests/snapshots/</code>, so rewording one is a deliberate act.</li>
+        snapshots under <code>tests/snapshots/</code>, so rewording one is a deliberate act.
+      </li>
     </ul>
   </section>
 
@@ -1885,7 +1894,8 @@
     <p>Note the shape of the trajectory: iteration 2 did <strong>not</strong> improve on iteration 1 — it scored the
       same and broke something else. The loop does not simply continue from whatever ran last; it selects a champion by
       <code>(valid?, score, index)</code> each round and refines <em>that</em>, carrying a checklist in which anything
-      still unfixed is escalated. Two rounds of critique later, the third attempt cleared the bar outright.</p>
+      still unfixed is escalated. Two rounds of critique later, the third attempt cleared the bar outright.
+    </p>
 
     <h3>4.2 · How the drawing is read</h3>
     <p>Before anything is generated, the drawing is decomposed. A VLM proposes where the front, top and side views are;
@@ -1988,7 +1998,8 @@ locality:         0.106  (changed bbox diagonal / part bbox diagonal)
       <figcaption>A specification, a drawing, or both. The iteration budget and the accept threshold are the two knobs
         that matter; <b>model &amp; sandbox</b> exposes the generator model, the critic model, the sandbox timeout, and
         the CadQuery/build123d switch. With a drawing attached the primary action changes from <b>generate</b> to
-        <b>read drawing</b> — the drawing has to be interpreted before anything is built.</figcaption>
+        <b>read drawing</b> — the drawing has to be interpreted before anything is built.
+      </figcaption>
     </figure>
 
     <h4>2 · The human review gate</h4>
@@ -2004,7 +2015,8 @@ locality:         0.106  (changed bbox diagonal / part bbox diagonal)
     <p>On this run the extraction needed no correction. It recovered the 135 × 85 × 65 mm envelope, the 12 mm base, R20
       / R77 / R26 / R15, the 15° draft, <code>Ø15 THRU</code> with <code>⌴ Ø30 ↧12</code>, <code>2× Ø5 THRU</code> with
       <code>⌴ Ø10 ↧5</code> at 55 mm spacing, both symmetry planes — and, from the title block, the ABS density of 1020
-      kg/m³ and the <strong>±1 g mass tolerance</strong> the drawing is really asking about.</p>
+      kg/m³ and the <strong>±1 g mass tolerance</strong> the drawing is really asking about.
+    </p>
 
     <h4>3 · The loop, streaming</h4>
     <figure>
@@ -2182,14 +2194,15 @@ locality:         0.106  (changed bbox diagonal / part bbox diagonal)
         from 0.6771 down to 0.0011), the v4 entry ranks <strong>54th of 154</strong> — ahead of 100 entries, behind
         53. It is a real, scored, non-zero submission in the upper two-thirds of the field, not yet a leading one.
         Validity is not what separates it from the entries ranked above it: of those 53, <strong>47 report a
-        validity rate below 100&nbsp;%</strong>, and 38 of them are at or below the v4 submission's own 97.5&nbsp;%.
+          validity rate below 100&nbsp;%</strong>, and 38 of them are at or below the v4 submission's own 97.5&nbsp;%.
         The shape and topology axes — not measured locally, and not broken out separately by the leaderboard — are
         where the gap to the top of the field most likely lives.</li>
     </ul>
 
     <p>The benchmark zeroes a sample outright if its solid is not valid, so validity is the one axis that can also be
       checked locally, and it was, on all 81 submitted files (<code>step_validity.py</code>, run over
-      <code>results/cadgen-v4/*/output.step</code>):</p>
+      <code>results/cadgen-v4/*/output.step</code>):
+    </p>
 
     <div class="keyfig">
       <div class="good"><span class="v">49 / 49</span><span class="k">Generation · valid</span></div>
@@ -2200,7 +2213,8 @@ locality:         0.106  (changed bbox diagonal / part bbox diagonal)
 
     <ul>
       <li>Both failures (samples 202 and 240) are editing tasks, and both report the same OpenCASCADE defect:
-        <code>Face: BRepCheck_UnorientableShape</code>.</li>
+        <code>Face: BRepCheck_UnorientableShape</code>.
+      </li>
       <li>For comparison, the audit of the <strong>v3</strong> submission recorded in <code>step_validity.py</code>
         found <strong>7 of 81</strong> candidates failing the same gate, five of them editing tasks. The v4 run reduced
         that to two — the validity gate, the validity-first champion key and the fallback chain were added in response
@@ -2274,7 +2288,8 @@ uv sync                       # locked virtualenv in .venv/
 cp .env.example .env          # then paste your OPENAI_API_KEY</code></pre>
     <p>The CAD kernel and the renderer are pure Python wheels — no system OpenGL or OSMesa. Optional extras:
       <code>uv sync --extra web</code> (dashboard backend), <code>--extra bench</code> (benchmark harness),
-      <code>--extra build123d</code> (alternative CAD library). A VS&nbsp;Code dev container is included.</p>
+      <code>--extra build123d</code> (alternative CAD library). A VS&nbsp;Code dev container is included.
+    </p>
 
     <h3>CLI</h3>
     <pre><code># from a technical drawing — opens the extracted dimensions for review first
@@ -2348,7 +2363,8 @@ print(result.accepted, result.best.effective_score, result.run_dir)</code></pre>
     <p>Passing <code>base_step=&lt;bytes&gt;</code> instead switches the run to editing mode;
       <code>result.edit_diff.digest</code> then reports what material the edit actually moved. Models, executor,
       renderer, reprojector and the <code>on_iteration</code> callback are all injectable, which is what makes the suite
-      offline.</p>
+      offline.
+    </p>
 
     <h3>Web dashboard</h3>
     <pre><code>uv sync --extra web &amp;&amp; (cd web &amp;&amp; pnpm install)
@@ -2357,7 +2373,8 @@ cd web &amp;&amp; pnpm dev                                                      
     <p>Drop a drawing, review the auto-extracted dimensions, generate, and watch each iteration arrive over SSE while
       orbiting the real solid in 3D. <code>--reload-dir</code> scopes the file watcher to source so a run writing into
       <code>runs/</code> does not restart the server mid-run. <strong><a href="#s4">Section 4.5</a> walks the whole flow
-        through screenshots of a real run</strong>, from empty form to downloadable STEP.</p>
+        through screenshots of a real run</strong>, from empty form to downloadable STEP.
+    </p>
     <p>Two things worth knowing when driving it: a run's live URL uses an ephemeral session id, while the permalink
       under <b>history</b> uses the run directory name — a completed run should be reopened from history, not from the
       URL it streamed on. And the optional <b>fal.ai showcase</b> button only appears usefully when <code>FAL_KEY</code>
@@ -2370,7 +2387,8 @@ uv run --extra bench cad-gen-bench run -o results/cadgen-v4 -n 5 -j 4           
 uv run --extra bench cad-gen-bench package results/cadgen-v4 --submitter "…" --name "…" --agree</code></pre>
     <p>Inputs come from the public Hugging Face dataset; the private ground truth is never needed locally.
       <code>--task-type generation|editing|all</code> narrows the run. Each sample's full trace lands under
-      <code>results/&lt;run&gt;/&lt;sample&gt;/cadgen/</code>; only <code>output.step</code> is packaged.</p>
+      <code>results/&lt;run&gt;/&lt;sample&gt;/cadgen/</code>; only <code>output.step</code> is packaged.
+    </p>
 
     <h3>Tests</h3>
     <pre><code>uv run pytest        # 287 tests, offline: scripted models, no API calls (enforced)
@@ -2393,14 +2411,17 @@ uv run ruff check .</code></pre>
       <li>On a BMW machine the public provider endpoints are unreachable; only BMW's OpenAI-compatible gateway is.
         <code>CAD_GEN_BMW=1</code> routes <strong>every</strong> agent through it in one switch (default model
         <code>openai/gpt-5-mini</code>); an explicit <code>bmw:&lt;model&gt;</code> env var still overrides per agent,
-        which is how you give the critic a vision-capable model while the generator uses something cheaper.</li>
+        which is how you give the critic a vision-capable model while the generator uses something cheaper.
+      </li>
       <li>Credentials go in <code>.env</code>: <code>LLM_API_PROD_KEY</code>, plus either <code>CLIENT_ID</code> +
         <code>CLIENT_SECRET</code> or a pre-fetched <code>LLM_ACCESS_TOKEN</code>. <code>src/cad_gen/bmw.py</code>
         fetches and refreshes the WebEAM bearer token and downloads BMW's CA bundle automatically; region and CA-cert
-        overrides are documented in <code>.env.example</code>. The downloaded bundle is gitignored.</li>
+        overrides are documented in <code>.env.example</code>. The downloaded bundle is gitignored.
+      </li>
       <li>Model identifiers follow the internal catalogue (<code>openai/gpt-5-mini</code>, <code>openai/gpt-4o</code>,
         <code>anthropic/claude-sonnet-4-5</code>, …), not the public ones. A model string that works on a laptop will
-        not necessarily resolve on the gateway.</li>
+        not necessarily resolve on the gateway.
+      </li>
       <li>Everything else — the kernel, the sandbox, the renderer, the reprojection check, the benchmark harness — is
         provider-independent and behaves identically either way.</li>
     </ul>
@@ -2417,7 +2438,8 @@ uv run ruff check .</code></pre>
       <li>Parts needing a swept feature <em>fused</em> to a body (a mug handle is the canonical case) sit at the edge of
         current model capability. The model often leaves the feature as a separate unfused solid; the ground-truth
         <code>n_solids</code> check catches it and the run returns its best effort rather than a wrong “accepted”. That
-        is the correct behaviour, but it is not a solution.</li>
+        is the correct behaviour, but it is not a solution.
+      </li>
       <li>Formed sheet-metal and other parts whose 3D structure is not readable from a plan view remain out of reach
         (§4.4).</li>
       <li>The scalar critic score is the weakest arbiter in the system and demonstrably admits both false accepts and
@@ -2493,10 +2515,12 @@ uv run ruff check .</code></pre>
         <code>CAD_GEN_MODEL</code> and <code>CAD_GEN_CRITIC_MODEL</code> both default to <code>gpt-5.6-luna</code>, so
         the model that writes the code also grades it. Setting the critic to another family is one environment variable,
         no code change, and it is the cheapest available move against the false accepts of §5.2. Measure it against the
-        §5.2 baseline rather than assuming it helps.</li>
+        §5.2 baseline rather than assuming it helps.
+      </li>
       <li><strong>Act on the locality gate.</strong> <code>is_plausible_local_edit()</code> measures and returns
         <code>True</code> regardless. Turning the calibrated thresholds on is a contained change with a real effect on
-        editing scores.</li>
+        editing scores.
+      </li>
       <li><strong>A true hidden-surface renderer</strong> (pyrender / OSMesa) to replace the NumPy z-buffer, for cleaner
         critic input on curved geometry.</li>
       <li><strong>Topology-specific dimension validators</strong> beyond the bounding-box assertion — hole patterns,
@@ -2517,7 +2541,8 @@ uv run ruff check .</code></pre>
       <li><code>README.md</code> — the operator manual: install, configuration, every CLI flag.</li>
       <li><code>docs/report/README.md</code> — this document: why it is shaped this way.</li>
       <li><code>src/cad_gen/orchestrator.py</code> — <strong>the whole loop is one file, ~870 lines.</strong> Read
-        <code>generate_cad()</code> top to bottom and you have the system; everything else is a step it calls.</li>
+        <code>generate_cad()</code> top to bottom and you have the system; everything else is a step it calls.
+      </li>
       <li><code>pipeline.md</code> — stage-by-stage input/output reference. Written before editing mode, the validity
         gate and the edit diff existed, so trust the stage map in section 03 where they disagree.</li>
       <li><code>src/cad_gen/reproject/DECISIONS.md</code> — why the drawing comparison works the way it does. The most
@@ -2549,7 +2574,8 @@ uv run ruff check .</code></pre>
       <li>The <code>build123d</code> extra is pinned <code>&gt;=0.9,&lt;0.10</code> for a concrete reason — 0.10+ moves
         to <code>cadquery-ocp-novtk</code> ≥ 7.9 and would upgrade the kernel underneath CadQuery <em>and</em> under
         <code>reproject/check.py</code>'s raw OCP imports. Read the comment in <code>pyproject.toml</code> before
-        relaxing it.</li>
+        relaxing it.
+      </li>
       <li>The default model string uses the <code>openai-responses:</code> prefix, not plain <code>openai:</code>. Every
         agent here needs tools, and the plain prefix resolves to Chat Completions, which rejects them. The reason is
         documented at the top of <code>models.py</code>.</li>
@@ -2559,8 +2585,9 @@ uv run ruff check .</code></pre>
   </section>
 
   <footer>
-    <p>Report generated 3 August 2026. Every figure in section 05 is reproducible from the artifacts in this repository;
+    <p>Report generated 17 August 2026. Every figure in section 05 is reproducible from the artifacts in this repository;
       the scripts that produced them are described inline in each subsection. Canonical Markdown source:
-      <code>docs/report/README.md</code>.</p>
+      <code>docs/report/README.md</code>.
+    </p>
   </footer>
 </div>
