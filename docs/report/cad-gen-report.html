@@ -2178,11 +2178,13 @@ locality:         0.106  (changed bbox diagonal / part bbox diagonal)
         the same two failures. That agreement is the useful part: it says the local validity gate in this repository
         is not just directionally right but numerically identical to the grader BMW ships, so the rest of this
         section's local-only numbers can be trusted as a proxy for what the server would report.</li>
-      <li>On the leaderboard's current sort by aggregate score, the v4 entry ranks 9th among the 12 rows visible at
-        the top of that sort (range 0.2833 – 0.3489). It is a real, scored, non-zero submission — not yet a
-        leading one — and the gap to the top of that range is larger than validity alone can close, since several
-        higher-ranked entries also report well below 100&nbsp;% validity. The shape and topology axes — not measured
-        locally, and not broken out separately by the leaderboard — are where that gap most likely lives.</li>
+      <li>Against the full leaderboard export (154 completed, scored entries from 34 submitters; aggregate scores
+        from 0.6771 down to 0.0011), the v4 entry ranks <strong>54th of 154</strong> — ahead of 100 entries, behind
+        53. It is a real, scored, non-zero submission in the upper two-thirds of the field, not yet a leading one.
+        Validity is not what separates it from the entries ranked above it: of those 53, <strong>47 report a
+        validity rate below 100&nbsp;%</strong>, and 38 of them are at or below the v4 submission's own 97.5&nbsp;%.
+        The shape and topology axes — not measured locally, and not broken out separately by the leaderboard — are
+        where the gap to the top of the field most likely lives.</li>
     </ul>
 
     <p>The benchmark zeroes a sample outright if its solid is not valid, so validity is the one axis that can also be
